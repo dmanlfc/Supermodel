@@ -139,6 +139,16 @@ public:
   uint32_t SyncSnapshots(void);
 
   /*
+   * PrepareFrame(void):
+   *
+   * Runs the renderer's CPU-only scene preparation.  May be called before the
+   * backend has acquired a frame, and must only access read-only snapshots and
+   * variables since it may be running in a separate thread.  Optional: the frame
+   * is identical whether or not it ran.
+   */
+  void PrepareFrame(void);
+
+  /*
    * BeginFrame(void):
    *
    * Prepares to render a new frame.  Must be called once per frame prior to

@@ -29,6 +29,7 @@
 #define INCLUDED_RENDER2D_H
 
 #include "Graphics/GL.h"
+#include "Graphics/IRender2D.h"
 #include <memory>
 #include "Supermodel.h"
 #include "Util/NewConfig.h"
@@ -44,7 +45,7 @@
    * the constructor, all members assume that a global GL device
    * context is available and that GL functions may be called.
    */
-class CRender2D
+class CRender2D : public IRender2D
 {
 public:
 	/*

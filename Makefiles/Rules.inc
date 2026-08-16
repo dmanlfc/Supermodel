@@ -108,6 +108,7 @@ SRC_FILES = \
 	Src/Graphics/New3D/GLSLShader.cpp \
 	Src/Graphics/New3D/R3DFrameBuffers.cpp \
 	Src/Graphics/New3D/New3D.cpp \
+	Src/Graphics/New3D/New3DBase.cpp \
 	Src/Graphics/New3D/Mat4.cpp \
 	Src/Graphics/New3D/Model.cpp \
 	Src/Graphics/New3D/PolyHeader.cpp \
@@ -361,6 +362,7 @@ $(BUILD_CONFIG_STAMP): force_build_config | $(OBJ_DIR)
 	  'EXTRA_DEBUG=$(strip $(EXTRA_DEBUG))' \
 	  'ENABLE_DEBUGGER=$(strip $(ENABLE_DEBUGGER))' \
 	  'GLES=$(strip $(GLES))' \
+	  'VULKAN=$(strip $(VULKAN))' \
 	  'WAYLAND=$(strip $(WAYLAND))' \
 	  'CC=$(CC)' \
 	  'CXX=$(CXX)' \

@@ -31,11 +31,11 @@
 class CBlockFile;
 struct Game;
 struct ROMSet;
-class CRender2D;
+class IRender2D;
 class IRender3D;
 class CInputs;
 class COutputs;
-class SuperAA;
+class IPostProcessor;
 
 /*
  * IEmulator:
@@ -151,7 +151,7 @@ public:
    *    Render2DPtr   Pointer to a tile renderer object.
    *    Render3DPtr   Same as above but for a 3D renderer.
    */
-  virtual void AttachRenderers(CRender2D *Render2DPtr, IRender3D *Render3DPtr, SuperAA *superAA) = 0;
+  virtual void AttachRenderers(IRender2D *Render2DPtr, IRender3D *Render3DPtr, IPostProcessor *postProcessor) = 0;
   
   /*
    * AttachInputs(InputsPtr):

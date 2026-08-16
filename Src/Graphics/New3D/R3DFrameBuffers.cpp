@@ -133,6 +133,18 @@ Result R3DFrameBuffers::CreateFBO(int width, int height)
 	glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH32F_STENCIL8, width, height);
 	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, m_renderBufferID);
 
+	// Tiled GPUs such as Broadcom V3D can only pack stencil alongside 24 bit
+	// integer depth, so report what was actually allocated. The Vulkan renderer is
+	// held to this as its reference.
+	{
+		GLint depthBits = 0;
+		GLint stencilBits = 0;
+		glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_DEPTH_SIZE, &depthBits);
+		glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_STENCIL_SIZE, &stencilBits);
+		InfoLog("OpenGL asked for GL_DEPTH32F_STENCIL8 and received %d depth bits and %d stencil bits.",
+			depthBits, stencilBits);
+	}
+
 	// check setup was successful
 	auto fboStatus = glCheckFramebufferStatus(GL_FRAMEBUFFER);
 #ifdef SUPERMODEL_GLES

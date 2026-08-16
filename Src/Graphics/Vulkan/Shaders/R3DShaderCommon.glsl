@@ -1,0 +1,420 @@
+// Supermodel - R3DShaderCommon.h equivalent: the helper set shared by the
+// triangle and quad Real3D fragment shaders.
+//
+// Must be included *after* the interpolated inputs (fsViewVertex, fsViewNormal,
+// fsTexCoord, fsColor, fsFixedShade, fsLODBase) and the colour outputs
+// (out0, out1, out2) have been declared.
+
+#ifndef SUPERMODEL_R3D_SHADER_COMMON_GLSL
+#define SUPERMODEL_R3D_SHADER_COMMON_GLSL
+
+#define LayerColour 0x0
+#define LayerTrans0 0x1
+#define LayerTrans1 0x2
+
+// Values such as spotEllipse.xy come from the shared New3D code in GL screen
+// coordinates, measured from the bottom of the viewport, so Y must be flipped back
+// before comparing against Vulkan's upper-left-origin gl_FragCoord.
+// fragCoordYTransform is vec2(-1.0, viewportHeight) for the GL-compatible default,
+// or vec2(1.0, 0.0) when the caller has pre-flipped.
+vec2 ScreenFragCoord()
+{
+	return vec2(gl_FragCoord.x, fragCoordYTransform.y + fragCoordYTransform.x * gl_FragCoord.y);
+}
+
+vec4 ExtractColour(int type, uint value)
+{
+	vec4 c = vec4(0.0);
+
+	if(type==0) {			// T1RGB5
+		c.r     = float((value >> 10) & 0x1Fu);
+		c.g     = float((value >> 5 ) & 0x1Fu);
+		c.b     = float((value      ) & 0x1Fu);
+		c.rgb  *= (1.0/31.0);
+		c.a     = 1.0 - float((value >> 15) & 0x1u);
+	}
+	else if(type==1) {		// Interleaved A4L4 (low byte)
+		c.rgb   = vec3(float(value&0xFu));
+		c.a     = float((value >> 4) & 0xFu);
+		c      *= (1.0/15.0);
+	}
+	else if(type==2) {
+		c.a     = float(value&0xFu);
+		c.rgb   = vec3(float((value >> 4) & 0xFu));
+		c      *= (1.0/15.0);
+	}
+	else if(type==3) {
+		c.rgb   = vec3(float((value>>8)&0xFu));
+		c.a     = float((value >> 12) & 0xFu);
+		c      *= (1.0/15.0);
+	}
+	else if(type==4) {
+		c.a     = float((value>>8)&0xFu);
+		c.rgb   = vec3(float((value >> 12) & 0xFu));
+		c      *= (1.0/15.0);
+	}
+	else if(type==5) {
+		c = vec4(float(value&0xFFu) / 255.0);
+		if(c.a==1.0)	{ c.a = 0.0; }
+		else			{ c.a = 1.0; }
+	}
+	else if(type==6) {
+		c = vec4(float((value>>8)&0xFFu) / 255.0);
+		if(c.a==1.0)	{ c.a = 0.0; }
+		else			{ c.a = 1.0; }
+	}
+	else if(type==7) {	// RGBA4
+		c.r = float((value>>12)&0xFu);
+		c.g = float((value>> 8)&0xFu);
+		c.b = float((value>> 4)&0xFu);
+		c.a = float((value>> 0)&0xFu);
+		c *= (1.0/15.0);
+	}
+	else if(type==8) {	// low byte, low nibble
+		c = vec4(float(value&0xFu) / 15.0);
+		if(c.a==1.0)	{ c.a = 0.0; }
+		else			{ c.a = 1.0; }
+	}
+	else if(type==9) {	// low byte, high nibble
+		c = vec4(float((value>>4)&0xFu) / 15.0);
+		if(c.a==1.0)	{ c.a = 0.0; }
+		else			{ c.a = 1.0; }
+	}
+	else if(type==10) {	// high byte, low nibble
+		c = vec4(float((value>>8)&0xFu) / 15.0);
+		if(c.a==1.0)	{ c.a = 0.0; }
+		else			{ c.a = 1.0; }
+	}
+	else if(type==11) {	// high byte, high nibble
+		c = vec4(float((value>>12)&0xFu) / 15.0);
+		if(c.a==1.0)	{ c.a = 0.0; }
+		else			{ c.a = 1.0; }
+	}
+
+	return c;
+}
+
+// hardware testing would be useful because i don't know exactly what happens if you try to read outside the texture sheet
+// wrap around is a good guess
+ivec2 WrapTexCoords(ivec2 pos, ivec2 coordinate, int level)
+{
+	ivec2 newCoord;
+	newCoord.x = coordinate.x & (2047 >> level);
+	newCoord.y = coordinate.y & (1023 >> level);
+
+	return newCoord;
+}
+
+ivec2 GetTextureSize(int level, ivec2 size)
+{
+	int mipDivisor = 1 << level;
+
+	return size / mipDivisor;
+}
+
+ivec2 GetTexturePosition(int level, ivec2 pos)
+{
+	int mipDivisor = 1 << level;
+
+	ivec2 retPos;
+	retPos.x = pos.x / mipDivisor;
+	retPos.y = pos.y / mipDivisor;
+
+	return retPos;
+}
+
+ivec2 GetMicroTexturePos(int id)
+{
+	const int xCoords[8] = int[](0, 0, 128, 128, 0, 0, 128, 128);
+	const int yCoords[8] = int[](0, 128, 0, 128, 256, 384, 256, 384);
+
+	return ivec2(xCoords[id],yCoords[id]);
+}
+
+float LinearTexLocations(int wrapMode, float size, float u, out float u0, out float u1)
+{
+	float texelSize		= 1.0 / size;
+	float halfTexelSize	= 0.5 / size;
+
+	if(wrapMode==0) {							// repeat
+		u	= u * size - 0.5;
+		u0	= (floor(u) + 0.5) / size;			// + 0.5 offset added to push us into the centre of a pixel, without we'll get rounding errors
+		u0	= fract(u0);
+		u1	= u0 + texelSize;
+		u1	= fract(u1);
+
+		return fract(u);						// return weight
+	}
+	else if(wrapMode==1) {						// repeat + clamp
+		u	= fract(u);							// must force into 0-1 to start
+		u	= u * size - 0.5;
+		u0	= (floor(u) + 0.5) / size;			// + 0.5 offset added to push us into the centre of a pixel, without we'll get rounding errors
+		u1	= u0 + texelSize;
+
+		if(u0 <  0.0)	u0 = 0.0;
+		if(u1 >= 1.0)	u1 = 1.0 - halfTexelSize;
+
+		return fract(u);						// return weight
+	}
+	else {										// mirror + mirror clamp - both are the same since the edge pixels are repeated anyway
+		float odd = floor(mod(u, 2.0));			// odd values are mirrored
+
+		if(odd > 0.0) {
+			u = 1.0 - fract(u);
+		}
+		else {
+			u = fract(u);
+		}
+
+		u	= u * size - 0.5;
+		u0	= (floor(u) + 0.5) / size;			// + 0.5 offset added to push us into the centre of a pixel, without we'll get rounding errors
+		u1	= u0 + texelSize;
+
+		if(u0 <  0.0)	u0 = 0.0;
+		if(u1 >= 1.0)	u1 = 1.0 - halfTexelSize;
+
+		return fract(u);						// return weight
+	}
+}
+
+vec4 texBiLinear(usampler2D texSampler, ivec2 wrapMode, vec2 texSize, ivec2 texPos, vec2 texCoord, int level)
+{
+	float tx[2], ty[2];
+	float a = LinearTexLocations(wrapMode.s, texSize.x, texCoord.x, tx[0], tx[1]);
+	float b = LinearTexLocations(wrapMode.t, texSize.y, texCoord.y, ty[0], ty[1]);
+
+	vec4 p0q0 = ExtractColour(baseTexType,texelFetch(texSampler, WrapTexCoords(texPos,ivec2(vec2(tx[0],ty[0]) * texSize + vec2(texPos)),level), level).r);
+	vec4 p1q0 = ExtractColour(baseTexType,texelFetch(texSampler, WrapTexCoords(texPos,ivec2(vec2(tx[1],ty[0]) * texSize + vec2(texPos)),level), level).r);
+	vec4 p0q1 = ExtractColour(baseTexType,texelFetch(texSampler, WrapTexCoords(texPos,ivec2(vec2(tx[0],ty[1]) * texSize + vec2(texPos)),level), level).r);
+	vec4 p1q1 = ExtractColour(baseTexType,texelFetch(texSampler, WrapTexCoords(texPos,ivec2(vec2(tx[1],ty[1]) * texSize + vec2(texPos)),level), level).r);
+
+	if(alphaTest) {
+		if(p0q0.a > p1q0.a)		{ p1q0.rgb = p0q0.rgb; }
+		if(p0q0.a > p0q1.a)		{ p0q1.rgb = p0q0.rgb; }
+
+		if(p1q0.a > p0q0.a)		{ p0q0.rgb = p1q0.rgb; }
+		if(p1q0.a > p1q1.a)		{ p1q1.rgb = p1q0.rgb; }
+
+		if(p0q1.a > p0q0.a)		{ p0q0.rgb = p0q1.rgb; }
+		if(p0q1.a > p1q1.a)		{ p1q1.rgb = p0q1.rgb; }
+
+		if(p1q1.a > p0q1.a)		{ p0q1.rgb = p1q1.rgb; }
+		if(p1q1.a > p1q0.a)		{ p1q0.rgb = p1q1.rgb; }
+	}
+
+	// Interpolation in X direction.
+	vec4 pInterp_q0 = mix( p0q0, p1q0, a ); // Interpolates top row in X direction.
+	vec4 pInterp_q1 = mix( p0q1, p1q1, a ); // Interpolates bottom row in X direction.
+
+	return mix( pInterp_q0, pInterp_q1, b ); // Interpolate in Y direction.
+}
+
+vec4 texBiLinearBank(int page, ivec2 wrapMode, vec2 texSize, ivec2 texPos, vec2 texCoord, int level)
+{
+	// Branching on constant indices avoids requiring
+	// shaderSampledImageArrayDynamicIndexing; texturePage is uniform per draw.
+	if (page == 0)
+		return texBiLinear(textureBank[0], wrapMode, texSize, texPos, texCoord, level);
+	return texBiLinear(textureBank[1], wrapMode, texSize, texPos, texCoord, level);
+}
+
+vec4 GetTextureValue()
+{
+	float lod = -log2(gl_FragCoord.w * gl_FragCoord.w * fsLODBase);
+	float numLevels = floor(log2(min(float(baseTexInfo.z), float(baseTexInfo.w)))) - 1.0;	// r3d only generates down to 2:2 for square textures, otherwise its the min dimension
+	float fLevel = clamp(lod, 0.0, numLevels);
+
+	int iLevel = int(fLevel);
+
+	ivec2 tex1Pos = GetTexturePosition(iLevel, baseTexInfo.xy);
+	ivec2 tex1Size = GetTextureSize(iLevel, baseTexInfo.zw);
+	vec4 tex1Data = texBiLinearBank(texturePage, textureWrapMode, vec2(tex1Size), tex1Pos, fsTexCoord, iLevel);
+
+	// init second texel with blank data to avoid any potentially undefined behavior
+	vec4 tex2Data = vec4(0.0);
+
+	float blendFactor = 0.0;
+
+	// if LOD < 0, no need to blend with next mipmap level; slight performance boost
+	//  while at it, just generalize to all cases where only one mip level needs to be touched
+	float ffL = fract(fLevel);
+	if (ffL > 0.0)
+	{
+		ivec2 tex2Pos = GetTexturePosition(iLevel+1, baseTexInfo.xy);
+		ivec2 tex2Size = GetTextureSize(iLevel+1, baseTexInfo.zw);
+		tex2Data = texBiLinearBank(texturePage, textureWrapMode, vec2(tex2Size), tex2Pos, fsTexCoord, iLevel+1);
+
+		blendFactor = ffL;
+	}
+	else if (microTexture && lod < 0.0)
+	{
+		vec4 scaleIndex = vec4(2.0, 4.0, 16.0, 256.0);		// unsure if minLOD=4 has 256x scale? No games appear to use it
+		vec2 scale = (vec2(baseTexInfo.zw) / 128.0) * scaleIndex[int(microTextureMinLOD)];
+
+		// microtextures are always 128x128 and only use LOD 0 mipmap
+		ivec2 tex2Pos = GetMicroTexturePos(microTextureID);
+		tex2Data = texBiLinearBank((texturePage+1)&1, ivec2(0), vec2(128.0), tex2Pos, fsTexCoord * scale, 0);
+
+		blendFactor = -lod * exp2(-microTextureMinLOD) * 0.5;
+		blendFactor = min(blendFactor, 0.5);
+	}
+
+	tex1Data = mix(tex1Data, tex2Data, blendFactor);
+
+	if(textureInverted) {
+		tex1Data.rgb = vec3(1.0) - tex1Data.rgb;
+	}
+
+	if (alphaTest) {
+		if (tex1Data.a < (32.0/255.0)) {
+			discard;
+		}
+	}
+
+	if(textureAlpha) {
+		if(discardAlpha) {					// opaque 1st pass
+			if (tex1Data.a < 1.0) {
+				discard;
+			}
+		}
+		else {								// transparent 2nd pass
+			if ((tex1Data.a * fsColor.a) >= 1.0) {
+				discard;
+			}
+		}
+	}
+
+	if (textureAlpha == false && alphaTest == false) {
+		tex1Data.a = 1.0;
+	}
+
+	return tex1Data;
+}
+
+void Step15Luminous(inout vec4 colour)
+{
+	// luminous polys seem to behave very differently on step 1.5 hardware
+	// when fixed shading is enabled the colour is modulated by the vp ambient + fixed shade value
+	// when disabled it appears to be multiplied by 1.5, presumably to allow a higher range
+	if(hardwareStep==0x15) {
+		if(!lightEnabled) {
+			if(fixedShading) {
+				colour.rgb *= 1.0 + fsFixedShade + lighting[1].y;
+			}
+			else {
+				colour.rgb *= 1.5;
+			}
+		}
+	}
+}
+
+float CalcFog()
+{
+	float z		= -fsViewVertex.z;
+	float fog	= fogIntensity * clamp(fogStart + z * fogDensity, 0.0, 1.0);
+
+	return fog;
+}
+
+float Sqr(float a)
+{
+	return a*a;
+}
+
+float SqrLength(vec2 a)
+{
+	return a.x*a.x + a.y*a.y;
+}
+
+// spotEllipse is vec4(center.xy, radius.xy), spotRange is vec2(startZ, extent).
+// The reversed-Z projection puts every useful depth in a sliver just above zero.
+// A float attachment resolves that; a normalised integer one has almost no codes
+// there, so coplanar surfaces collapse onto one value and the depth test falls
+// back to draw order. The IEEE-754 bit pattern of a non-negative float rises
+// monotonically with its value, so scaling it remaps the range across the whole
+// of [0,1] with uniform relative precision - what the float buffer gives and the
+// integer one does not - while preserving every comparison the test relies on.
+// 0x3F800000 is the pattern for 1.0, so a cleared 0.0 stays 0.0 and 1.0 stays 1.0.
+// The unencoded value is kept for the line-of-sight readback, which decodes 1/z.
+float gLinearDepth;
+
+// FrustumRZ makes this NEAR_PLANE/z, so depth spans (0,1] but only ever occupies
+// the low exponents: z of 1 to 100000 lands in 2^-10 to 2^-27, never near 1.0.
+// Scaling the raw bit pattern therefore spends the buffer across all 127 float
+// exponents when a scene uses about twenty. Biasing by the pattern for 2^-32 and
+// rescaling spends it across thirty two instead, which is four times the codes per
+// octave. Nothing saturates at the near end because depth cannot exceed 1.0, and
+// the far end only saturates past z of about 4.3 million. The subtraction is done
+// in uint because doing it after the float conversion would cancel away the low
+// bits it is meant to preserve.
+const uint kDepthEncodeBias = 796917760u;             // floatBitsToUint(2^-32)
+const float kDepthEncodeScale = 1.0 / 268435456.0;    // 1 / (bits(1.0) - bias)
+
+float EncodeDepth(float depth)
+{
+	gLinearDepth = depth;
+	if (depthEncodeMode == 0u) {
+		return depth;
+	}
+	uint bits = floatBitsToUint(max(depth, 0.0));
+	uint biased = bits > kDepthEncodeBias ? bits - kDepthEncodeBias : 0u;
+	return min(float(biased) * kDepthEncodeScale, 1.0);
+}
+
+void ComputeSpotlight(vec4 spotEllipse, vec2 spotRange, float viewZ,
+    out float lobeEffect,
+	out float lobeFogEffect)
+{
+    // Ellipse falloff. ScreenFragCoord() restores the GL lower-left fragment
+    // origin that spotEllipse.xy is expressed in.
+    float ellipse = SqrLength((ScreenFragCoord() - spotEllipse.xy) / spotEllipse.zw);
+    ellipse = 1.0 - ellipse;
+    ellipse = max(0.0, ellipse);
+
+    // Spotlight enable
+    float enable = step(spotRange.x, -viewZ);
+
+    // Spotlight range falloff
+    float range = 0.0;
+
+    if (spotRange.y != 0.0) {
+        float absExtent = abs(spotRange.y);
+
+        float d = spotRange.x + absExtent + viewZ;
+        d = min(d, 0.0);
+
+        float inv_r = 1.0 / (1.0 + absExtent);
+
+        // inverse-linear falloff
+        range = 1.0 / Sqr(d * inv_r - 1.0);
+        range *= enable;
+    }
+
+    // Final outputs
+    lobeEffect    = range * ellipse;
+    lobeFogEffect = enable * ellipse;
+}
+
+void WriteOutputs(vec4 colour, int layer)
+{
+	vec4 blank = vec4(0.0);
+
+	if(layer==LayerColour) {
+		colour.a = 1.0;		// always have alpha of 1
+		out0 = colour;
+		out1 = blank;
+		out2 = blank;
+	}
+	else if(layer==LayerTrans0) {
+		out0 = blank;
+		out1 = colour;
+		out2 = blank;
+	}
+	else if(layer==LayerTrans1) {
+		out0 = blank;
+		out1 = blank;
+		out2 = colour;
+	}
+}
+
+#endif // SUPERMODEL_R3D_SHADER_COMMON_GLSL

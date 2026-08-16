@@ -112,6 +112,29 @@ Wayland preference and GLES can be enabled together:
 make -f Makefiles/Makefile.UNIX WAYLAND=1 GLES=1
 ```
 
+The Vulkan renderer is built with:
+
+```
+make -f Makefiles/Makefile.UNIX VULKAN=1
+```
+
+`VULKAN=1` requires the Vulkan headers and loader (for example
+`libvulkan-dev` on Ubuntu). It does not replace OpenGL: the resulting binary
+contains both renderers and OpenGL remains the default. Select a renderer at
+run time with `-graphics-backend=OpenGL` (default) or `-graphics-backend=Vulkan`,
+or with `GraphicsBackend` in `Supermodel.ini`. Both values are case sensitive.
+
+Because the Vulkan renderer uses no OpenGL API, `VULKAN=1` is independent of
+`GLES` and `WAYLAND` and any combination is valid:
+
+```
+make -f Makefiles/Makefile.UNIX VULKAN=1 GLES=1
+make -f Makefiles/Makefile.UNIX VULKAN=1 GLES=1 WAYLAND=1
+```
+
+A `GLES=1 VULKAN=1` binary contains the OpenGL ES and Vulkan renderers side by
+side, and the renderer remains the user's run-time choice.
+
 The GLES build requires an OpenGL ES 3.1-capable display/device and uses the New3D renderer. Legacy3D is not supported. Triangle rendering is used by default and supports ES 3.1 or newer. `-quad-rendering` requires the ES 3.2 geometry-shader path; if an ES 3.2 context cannot be created, Supermodel retries ES 3.1 and automatically disables quad rendering. Quad rendering may also be slower on some tile-based ARM GPUs. macOS builds continue to use desktop OpenGL.
 
 ### macOS

@@ -33,6 +33,7 @@
 #include "Graphics/GL.h"
 #include "Types.h"
 #include "Graphics/IRender3D.h"
+#include "New3DBase.h"
 #include "Model.h"
 #include "Mat4.h"
 #include "R3DShader.h"
@@ -48,7 +49,7 @@
 
 namespace New3D {
 
-class CNew3D final : public IRender3D
+class CNew3D final : public CNew3DBase
 {
 public:
 	/*
@@ -59,6 +60,15 @@ public:
 	* lists.
 	*/
 	void RenderFrame(void);
+
+	/*
+	* PrepareFrame(void):
+	*
+	* Builds the scene structure from the Real3D scene database. Pure CPU, so it may
+	* run before the frame is acquired. Optional; RenderFrame() does it itself if
+	* this was not called.
+	*/
+	void PrepareFrame(void);
 
 	/*
 	* BeginFrame(void):
@@ -108,19 +118,6 @@ public:
 		const UINT32 *vromPtr, const UINT16 *textureRAMPtr);
 
 	/*
-	* SetStepping(stepping):
-	*
-	* Sets the Model 3 hardware stepping, which also determines the Real3D
-	* functionality. The default is Step 1.0. This should be called prior to
-	* any other emulation functions and after Init().
-	*
-	* Parameters:
-	*   stepping  0x10 for Step 1.0, 0x15 for Step 1.5, 0x20 for Step 2.0, or
-	*             0x21 for Step 2.1. Anything else defaults to 1.0.
-	*/
-	void SetStepping(int stepping);
-
-	/*
 	* Init(xOffset, yOffset, xRes, yRes, totalXRes, totalYRes):
 	*
 	* One-time initialization of the context. Must be called before any other
@@ -146,36 +143,6 @@ public:
 	Result Init(unsigned xOffset, unsigned yOffset, unsigned xRes, unsigned yRes, unsigned totalXRes, unsigned totalYRes, unsigned aaTarget);
 
 	/*
-	* SetSunClamp(bool enable);
-	*
-	* Sets or unsets the clamped light model
-	*
-	* Parameters:
-	*		enable	Set clamp mode
-	*/
-	void SetSunClamp(bool enable);
-
-	/*
-	* SetBlockCulling(bool enable);
-	*
-	* When enabled, clears screen to white and disables 3D rendering
-	*
-	* Parameters:
-	*		enable	Set block culling
-	*/
-	void SetBlockCulling(bool enable);
-
-	/*
-	* GetLosValue(int layer);
-	*
-	* Gets the line of sight value for the priority layer
-	*
-	* Parameters:
-	*		layer	Priority layer to read from
-	*/
-	float GetLosValue(int layer);
-
-	/*
 	* CRender3D(config):
 	* ~CRender3D(void):
 	*
@@ -192,103 +159,19 @@ private:
 	* Private Members
 	*/
 
-	// Real3D address translation
-	const UINT32 *TranslateCullingAddress(UINT32 addr);
-	const UINT32 *TranslateModelAddress(UINT32 addr);
-
-	// Matrix stack
-	void MultMatrix(UINT32 matrixOffset, Mat4& mat);
-	void InitMatrixStack(UINT32 matrixBaseAddr, Mat4& mat);
-	void ResetMatrix(Mat4& mat) const;
-
-	// Scene database traversal
-	bool DrawModel(UINT32 modelAddr);
-	void DescendCullingNode(UINT32 addr);
-	void DescendPointerList(UINT32 addr);
-	void DescendNodePtr(UINT32 nodeAddr);
-	void RenderViewport(UINT32 addr);
-
-	// building the scene
-	int	GetTexFormat(int originalFormat, bool contour) const;
-	void SetMeshValues(SortingMesh *currentMesh, PolyHeader &ph);
-	void CacheModel(Model *m, const UINT32 *data);
-	void CopyVertexData(const R3DPoly& r3dPoly, std::vector<FVertex>& vertexArray);
-	void GetCoordinates(int width, int height, UINT16 uIn, UINT16 vIn, float uvScale, float& uOut, float& vOut) const;
-
 	bool RenderScene(int priority, bool renderOverlay, Layer layer);		// returns if has overlay plane
-	bool IsDynamicModel(UINT32 *data) const;				// check if the model has a colour palette
-	bool IsVROMModel(UINT32 modelAddr) const;
 	void DrawScrollFog();
 	void DrawAmbientFog();
-	bool SkipLayer(int layer);
 	void SetRenderStates();
 	void DisableRenderStates();
-	void TranslateLosPosition(int inX, int inY, int& outX, int& outY) const;
 	bool ProcessLos(int priority);
-	void CalcViewport(Viewport* vp);
-	void TranslateTexture(unsigned& x, unsigned& y, int width, int height, int& page) const;
 
 	/*
 	* Data
 	*/
 
-	// Misc
-	std::string m_gameName;
-	int m_numPolyVerts;
 	GLenum m_primType;
 
-	// GPU configuration
-	std::atomic_bool m_sunClamp;
-	std::atomic_bool m_blockCulling;
-	bool m_noWhiteFlash;
-
-	// Stepping
-	int		m_step;
-	int		m_offset;			// offset to subtract for words 3 and higher of culling nodes
-	float	m_vertexFactor;		// fixed-point conversion factor for vertices
-	float	m_textureNPFactor;	// fixed-point conversion factor for texture NP values
-
-	// Memory (passed from outside)
-	const UINT32	*m_cullingRAMLo;	// 4 MB
-	const UINT32	*m_cullingRAMHi;	// 1 MB
-	const UINT32	*m_polyRAM;			// 4 MB
-	const UINT32	*m_vrom;			// 64 MB
-	const UINT16	*m_textureRAM;		// 8 MB
-
-	// Resolution and scaling factors (to support resolutions higher than 496x384) and offsets
-	float		m_xRatio, m_yRatio;
-	unsigned	m_xOffs, m_yOffs;
-	unsigned	m_xRes, m_yRes;			// Model 3 display area within the New3D render target
-	unsigned  	m_totalXRes, m_totalYRes;	// complete New3D render-target resolution
-	bool		m_wideScreen;
-	int			m_renderScale;
-	unsigned	m_outputXOffs, m_outputYOffs;
-	unsigned	m_outputXRes, m_outputYRes;	// destination area within the output surface
-
-	// Real3D Base Matrix Pointer
-	const float	*m_matrixBasePtr;
-	UINT32 m_colorTableAddr = 0x400;		// address of color table in polygon RAM
-	LODBlendTable* m_LODBlendTable;
-
-	NodeAttributes	m_nodeAttribs;
-	Mat4			m_modelMat;				// current modelview matrix
-
-	struct LOS
-	{
-		float value[4] = { 0,0,0,0 };		// line of sight value for each priority layer
-	} m_los[2];
-
-	LOS* m_losFront = &m_los[0];			// we need to double buffer this because 3d works in separate thread
-	LOS* m_losBack = &m_los[1];
-	std::mutex m_losMutex;
-
-	Vertex			m_prev[4];				// these are class variables because sega bass fishing starts meshes with shared vertices from the previous one
-	UINT16			m_prevTexCoords[4][2];	// basically relying on undefined behavour
-
-	std::vector<Node>	 m_nodes;				// this represents the entire render frame
-	std::vector<FVertex> m_polyBufferRam;		// dynamic polys
-	std::vector<FVertex> m_polyBufferRom;		// rom polys
-	std::unordered_map<UINT32, std::shared_ptr<std::vector<Mesh>>> m_romMap;	// a hash table for all the ROM models. The meshes don't have model matrices or tex offsets yet
 	TextureBank			m_textureBank[2];
 
 	GLuint m_vao;
@@ -298,19 +181,6 @@ private:
 	R3DFrameBuffers m_r3dFrameBuffers;
 	GLuint m_aaTarget;						// optional, maybe zero
 	bool m_ready;
-
-	struct
-	{
-		float bnlu;
-		float bnlv;
-		float bntu;
-		float bntw;
-		float bnru;
-		float bnrv;
-		float bnbu;
-		float bnbw;
-		float correction;
-	} m_planes;	
 };
 
 } // New3D

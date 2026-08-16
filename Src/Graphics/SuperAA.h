@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Supermodel.h"
+#include "Graphics/IPostProcessor.h"
 #include "FBO.h"
 #include "New3D/GLSLShader.h"
 
@@ -10,7 +11,7 @@
 // values such as 3 are also possible, that works out 9 samples per pixel
 // The algorithm is super simple, just add up all samples and divide by the number
 
-class SuperAA
+class SuperAA : public IPostProcessor
 {
 public:
 	SuperAA(int aaValue, CRTcolor CRTcolors);

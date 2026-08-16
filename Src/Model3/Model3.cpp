@@ -2161,8 +2161,18 @@ void CModel3::RenderFrame(void)
 {
   UINT32 start = CThread::GetTicks();
 
+  // Walk the Real3D scene database before the backend acquires a frame. This is
+  // pure CPU work over the snapshot SyncGPUs() took at the end of the previous
+  // frame, so it does not need a command buffer, a swapchain image, or the GPU to
+  // have finished. Running it here overlaps it with the wait inside
+  // BeginFrameVideo() instead of queueing behind it.
+  if (gpusReady)
+    GPU.PrepareFrame();
+
   // Call OSD video callbacks
-  if (BeginFrameVideo() && gpusReady)
+  const bool haveFrame = BeginFrameVideo();
+
+  if (haveFrame && gpusReady)
   {
     // Render frame
     TileGen.BeginFrame();
@@ -2173,7 +2183,7 @@ void CModel3::RenderFrame(void)
     TileGen.RenderFrameTop();
     GPU.EndFrame();
     TileGen.EndFrame();
-    m_superAA->Draw();
+    m_postProcessor->Draw();
   }
 
   EndFrameVideo();
@@ -3059,11 +3069,11 @@ Result CModel3::LoadGame(const Game &game, const ROMSet &rom_set)
   return Result::OKAY;
 }
 
-void CModel3::AttachRenderers(CRender2D *Render2DPtr, IRender3D *Render3DPtr, SuperAA *superAA)
+void CModel3::AttachRenderers(IRender2D *Render2DPtr, IRender3D *Render3DPtr, IPostProcessor *postProcessor)
 {
   TileGen.AttachRenderer(Render2DPtr);
   GPU.AttachRenderer(Render3DPtr);
-  m_superAA = superAA;
+  m_postProcessor = postProcessor;
 }
 
 void CModel3::AttachInputs(CInputs *InputsPtr)
@@ -3204,7 +3214,7 @@ CModel3::CModel3(Util::Config::Node &config)
     GPU(config),
     SoundBoard(config),
     m_jtag(GPU),
-    m_superAA(nullptr)
+    m_postProcessor(nullptr)
 {
   // Initialize pointers so dtor can know whether to free them
   memoryPool = NULL;

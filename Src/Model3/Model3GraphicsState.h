@@ -120,7 +120,7 @@ public:
     return Result::OKAY;
   }
 
-  void AttachRenderers(CRender2D *render2D, IRender3D *render3D, SuperAA* superAA) override
+  void AttachRenderers(IRender2D *render2D, IRender3D *render3D, IPostProcessor* postProcessor) override
   {
     m_tileGen.AttachRenderer(render2D);
     m_real3D.AttachRenderer(render3D);

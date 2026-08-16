@@ -12,6 +12,23 @@
 class IRender3D
 {
 public:
+  /*
+   * PrepareFrame(void):
+   *
+   * Performs the CPU-only part of building a frame: walking the Real3D scene
+   * database into the renderer's own structures. Called before the backend
+   * acquires a frame, so an implementation must not touch the graphics API here.
+   *
+   * The scene data read is the snapshot taken at the end of the previous frame, so
+   * this does not depend on the GPU having finished. Calling it is optional: a
+   * renderer must produce the same frame whether or not it ran, which lets the
+   * single-threaded path and skipped frames fall back to doing the work inside
+   * RenderFrame().
+   */
+  virtual void PrepareFrame(void)
+  {
+  }
+
   virtual void RenderFrame(void) = 0;
   virtual void BeginFrame(void) = 0;
   virtual void EndFrame(void) = 0;

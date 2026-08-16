@@ -276,14 +276,22 @@ try:
 
     supermodel game.zip -res=1920,1080 -fullscreen
 
-Rendering resolution is controlled independently with '-render-scale'.
-The default value of 0 renders at the output surface resolution.
-Values 1 through 8 select scales based on the origianl Model 3 resolution.
-In standard aspect mode, these produce targets from 496x384 through 3968x3072.
-In wide-screen mode, the target height remains 384 times the selected scale while its
-width follows the output aspect ratio; for example, scale 3 at 16:9 renders at 2048x1152.
-The result is then scaled to the output surface resolution.
-This setting does not affect the 2D layers or Supersampling multiplying with '-ss'.
+The New3D rendering resolution is controlled independently with
+'-render-scale'.  Its default value of 0 preserves the original behavior by
+rendering at the output-surface resolution.  Values 1 through 8 select fixed
+integer scales.  In standard aspect mode, these produce targets from 496x384
+through 3968x3072.  In wide-screen mode, the target height remains 384 times
+the selected scale while its width follows the output aspect ratio; for
+example, scale 3 at 16:9 renders at 2048x1152.  The result is then scaled to the
+output surface.  This setting does not affect the 2D layers or multiply with
+'-ss'.
+
+Supermodel can render with either OpenGL or Vulkan.  OpenGL is the default and
+is always available.  Vulkan is selected with '-graphics-backend=Vulkan' and is
+only present in binaries built with VULKAN=1; on macOS it runs through MoltenVK.
+Both values are case sensitive, and an unrecognized backend is reported as an
+error rather than silently falling back to OpenGL.  The Vulkan renderer
+implements the New3D engine only and cannot be combined with '-legacy3d'.
 
 Video settings may also be specified globally or on a per-game basis in the
 configuration file, described elsewhere in this manual.
@@ -1235,6 +1243,16 @@ not.  All options are case sensitive.
 
     ----------------
 
+    Option:         -graphics-backend=<s>
+
+    Description:    Selects the graphics backend.  Valid values are OpenGL,
+                    the default, and Vulkan.  Both are case sensitive and an
+                    unrecognized value is an error.  Vulkan is only available
+                    in binaries built with VULKAN=1, implements the New3D
+                    engine only, and on macOS runs through MoltenVK.
+
+    ----------------
+
     Option:         -res=<x>,<y>
 
     Description:    Resolution of the display in pixels, with <x> being width
@@ -1251,8 +1269,8 @@ not.  All options are case sensitive.
                     integer scales based on a height of 384 pixels.  Standard
                     aspect mode uses a width of 496 pixels per scale; wide-
                     screen mode derives the width from the output aspect ratio.
-                    This setting works with the New3D rendering engine and is
-                    independent of supersampling.
+                    This setting affects only New3D and is independent of
+                    supersampling.
 
     ----------------
 
@@ -1434,6 +1452,19 @@ All settings are case sensitive.
 
     ----------------
 
+    Name:           GraphicsBackend
+
+    Argument:       String.
+
+    Description:    Selects the graphics backend.  Valid values are "OpenGL",
+                    the default, and "Vulkan".  Both are case sensitive and an
+                    unrecognized value is an error.  Vulkan is only available
+                    in binaries built with VULKAN=1, implements the New3D
+                    engine only, and on macOS runs through MoltenVK.
+                    Equivalent to the '-graphics-backend' command line option.
+
+    ----------------
+
     Name:           XResolution
                     YResolution
 
@@ -1455,9 +1486,9 @@ All settings are case sensitive.
                     integer scales based on a height of 384 pixels.  Standard
                     aspect mode uses a width of 496 pixels per scale; wide-
                     screen mode derives the width from the output aspect ratio.
-                    This setting works with the New3D rendering engine and is
-                    independent of Supersampling.
-                    Equivalent to the '-render-scale' command line option.
+                    This setting affects only New3D and is independent of
+                    Supersampling.  Equivalent to the '-render-scale' command
+                    line option.
 
     ----------------
 

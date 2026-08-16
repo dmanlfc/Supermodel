@@ -388,6 +388,11 @@ uint32_t CReal3D::UpdateSnapshots(bool copyWhole)
   return cullLoCopied + cullHiCopied + polyCopied + textureCopied;
 }
 
+void CReal3D::PrepareFrame(void)
+{
+  Render3D->PrepareFrame();
+}
+
 void CReal3D::BeginFrame(void)
 {
   // If multi-threaded, perform now any queued texture uploads to renderer before rendering begins

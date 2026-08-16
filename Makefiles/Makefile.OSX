@@ -53,6 +53,25 @@ PKG_FILES = Frameworks/*.framework
 include Makefiles/Options.inc
 
 #
+# Optional Vulkan backend, via MoltenVK. VULKAN=1 builds the Vulkan renderer
+# alongside the OpenGL one; OpenGL remains the default at run time and the backend
+# is selected with GraphicsBackend. Off by default, so the plain build needs no
+# Vulkan toolchain at all.
+#
+# MoltenVK implements Vulkan on top of Metal. It reports no geometryShader, so the
+# renderer takes the same triangle path it takes on any other device without
+# geometry shaders rather than anything macOS specific.
+#
+# Set VULKAN_SDK to a directory holding include/vulkan and a Vulkan library, or
+# let the search below find the LunarG SDK, a Homebrew install, or an unpacked
+# MoltenVK release. GLSLANG or GLSLC may be set to a shader compiler explicitly.
+#
+VULKAN =
+ifneq ($(filter $(strip $(VULKAN)),0 1),$(strip $(VULKAN)))
+	override VULKAN =
+endif
+
+#
 # Toolchain
 #
 CC = clang
@@ -74,6 +93,65 @@ PLATFORM_CXXFLAGS = -F./Frameworks -IFrameworks/SDL2.framework/Headers $(SDL_CFL
 PLATFORM_LDFLAGS = -F./Frameworks $(SDL_LIBS) -lz -lm -lstdc++ -Wl,-rpath,@executable_path/../Frameworks -Wl,-rpath,@executable_path/Frameworks
 PLATFORM_DIRS = Frameworks/SDL2_net.framework Frameworks/SDL2.framework
 PLATFORM_BINARY_EXTENSION =
+# VULKAN=1 changes both the source list and the defines, so objects from the other
+# variant must not be reused.
+PLATFORM_TRACK_BUILD_CONFIG = 1
+
+#
+# Vulkan via MoltenVK
+#
+# Supermodel calls the Vulkan entry points directly, so the implementation has to
+# be linked, not merely dlopen'd by SDL. Either a loader (libvulkan) or MoltenVK
+# itself satisfies that, since MoltenVK exports the whole core API.
+#
+ifeq ($(strip $(VULKAN)),1)
+
+# Candidate roots, most specific first. Each is expected to contain include/vulkan.
+VULKAN_SDK ?=
+VULKAN_SEARCH_DIRS = \
+	$(strip $(VULKAN_SDK)) \
+	$(HOME)/VulkanSDK/macOS \
+	$(HOME)/.local/vulkan-dev/MoltenVK/MoltenVK \
+	/usr/local/opt/molten-vk \
+	/opt/homebrew/opt/molten-vk \
+	/usr/local \
+	/opt/homebrew
+
+VULKAN_ROOT := $(firstword $(foreach dir,$(VULKAN_SEARCH_DIRS),\
+	$(if $(wildcard $(dir)/include/vulkan/vulkan.h),$(dir),)))
+
+ifeq ($(strip $(VULKAN_ROOT)),)
+$(error VULKAN=1 could not find include/vulkan/vulkan.h. Set VULKAN_SDK to a \
+directory containing include/vulkan and a Vulkan or MoltenVK library, for example \
+VULKAN_SDK=$$HOME/VulkanSDK/1.4.x/macOS)
+endif
+
+# A loader is preferred when present: it is what a normal macOS Vulkan install
+# looks like. Otherwise link MoltenVK directly, which needs no ICD or loader.
+VULKAN_LIB_CANDIDATES = \
+	$(VULKAN_ROOT)/lib/libvulkan.1.dylib \
+	$(VULKAN_ROOT)/lib/libvulkan.dylib \
+	$(VULKAN_ROOT)/dynamic/dylib/macOS/libMoltenVK.dylib \
+	$(VULKAN_ROOT)/lib/libMoltenVK.dylib
+
+VULKAN_LIB := $(firstword $(wildcard $(VULKAN_LIB_CANDIDATES)))
+
+ifeq ($(strip $(VULKAN_LIB)),)
+$(error VULKAN=1 found headers in $(VULKAN_ROOT) but no libvulkan or libMoltenVK \
+alongside them. Set VULKAN_SDK to an install that provides both)
+endif
+
+VULKAN_LIB_DIR := $(dir $(VULKAN_LIB))
+
+$(info Vulkan backend         : $(VULKAN_ROOT))
+$(info Vulkan library         : $(VULKAN_LIB))
+
+PLATFORM_CXXFLAGS += -DSUPERMODEL_VULKAN -I$(VULKAN_ROOT)/include
+# rpath as well as the direct reference, because the library's own install name is
+# @rpath-relative and it is not in a default search path.
+PLATFORM_LDFLAGS += $(VULKAN_LIB) -Wl,-rpath,$(VULKAN_LIB_DIR)
+
+endif
 
 #
 # GitHub token
@@ -97,10 +175,39 @@ endif
 PLATFORM_SRC_FILES = \
 	Src/OSD/OSX/FileSystemPath.cpp
 
+#
+# The complete Vulkan backend. Every one of these translation units is guarded by
+# #ifdef SUPERMODEL_VULKAN, so they compile to nothing without VULKAN=1, but they
+# are only listed here because that is also what puts Src/Graphics/Vulkan on the
+# include path and pulls the embedded SPIR-V headers into the build.
+#
+ifeq ($(strip $(VULKAN)),1)
+	PLATFORM_SRC_FILES += \
+		Src/Graphics/Vulkan/VulkanContext.cpp \
+		Src/Graphics/Vulkan/VulkanRenderers.cpp \
+		Src/Graphics/Vulkan/VulkanResources.cpp \
+		Src/Graphics/Vulkan/VulkanTextureBank.cpp \
+		Src/Graphics/Vulkan/VulkanRenderTargets.cpp \
+		Src/Graphics/Vulkan/VulkanPipelines.cpp \
+		Src/Graphics/Vulkan/VulkanNew3D.cpp \
+		Src/Graphics/Vulkan/VulkanComposite.cpp \
+		Src/Graphics/Vulkan/VulkanRender2D.cpp \
+		Src/Graphics/Vulkan/VulkanPostProcess.cpp \
+		Src/Graphics/Vulkan/VulkanCrosshair.cpp
+endif
+
 include Makefiles/Rules.inc
 
 # -s (strip) is obsolete and ignored by Apple ld64; remove it to avoid potential warnings
 LDOPT := $(filter-out -s,$(LDOPT))
+
+#
+# Shader rules need $(OBJ_DIR) from Rules.inc, so they come after it.
+#
+ifeq ($(strip $(VULKAN)),1)
+VULKAN_SHADER_GENERATOR = Makefiles/Makefile.OSX
+include Makefiles/VulkanShaders.inc
+endif
 
 clean:
 	$(SILENT)echo Cleaning up \"Frameworks\", \"$(BIN_DIR)\" and \"$(OBJ_DIR)\"...

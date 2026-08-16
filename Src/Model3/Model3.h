@@ -43,7 +43,7 @@
 #include "CPU/PowerPC/ppc.h"
 #include "Network/INetBoard.h"
 #include "Util/NewConfig.h"
-#include "Graphics/SuperAA.h"
+#include "Graphics/IPostProcessor.h"
 #include "OSD/Thread.h"
 
 /*
@@ -90,7 +90,7 @@ public:
   void RenderFrame(void);
   void Reset(void);
   const Game &GetGame(void) const;
-  void AttachRenderers(CRender2D *Render2DPtr, IRender3D *Render3DPtr, SuperAA *superAA);
+  void AttachRenderers(IRender2D *Render2DPtr, IRender3D *Render3DPtr, IPostProcessor *postProcessor);
   void AttachInputs(CInputs *InputsPtr);
   void AttachOutputs(COutputs *OutputsPtr);
   Result Init(void);
@@ -316,7 +316,7 @@ private:
   CDriveBoard *DriveBoard;    // Drive board
   CCrypto     m_cryptoDevice; // Encryption device
   CJTAG       m_jtag;         // JTAG interface
-  SuperAA     *m_superAA;
+  IPostProcessor *m_postProcessor;
   INetBoard   *NetBoard;      // Net board
   bool		    m_runNetBoard;
 };

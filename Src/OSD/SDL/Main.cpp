@@ -95,11 +95,21 @@
 #include "Graphics/Legacy3D/Legacy3D.h"
 #endif
 #include "Graphics/New3D/New3D.h"
+#include "Graphics/Render2D.h"
 #include "Model3/IEmulator.h"
 #include "Model3/Model3.h"
 #include "OSD/Audio.h"
 #include "Graphics/New3D/VBO.h"
 #include "Graphics/SuperAA.h"
+#ifdef SUPERMODEL_VULKAN
+#ifdef SUPERMODEL_OSX
+#include <SDL2/SDL_vulkan.h>
+#else
+#include <SDL_vulkan.h>
+#endif
+#include "Graphics/Vulkan/VulkanContext.h"
+#include "Graphics/Vulkan/VulkanRenderers.h"
+#endif
 #include "Sound/MPEG/MpegAudio.h"
 
 #include <iostream>
@@ -129,6 +139,19 @@ static Util::Config::Node s_runtime_config("Global");
 
 SDL_Window *s_window = nullptr;
 static bool s_showWindowAfterNextSwap = false;
+#ifdef SUPERMODEL_VULKAN
+static std::unique_ptr<Vulkan::Context> s_vulkanContext;
+static bool s_vulkanFrameActive = false;
+// Deferred screenshot readback and the Vulkan crosshairs. Both draw into, or read
+// from, the Context's output image, so they live and die with the Context.
+static std::unique_ptr<Vulkan::ScreenshotRecorder> s_vulkanScreenshots;
+static std::unique_ptr<Vulkan::Crosshair> s_vulkanCrosshair;
+#endif
+
+static bool IsVulkanBackend()
+{
+  return s_runtime_config["GraphicsBackend"].ValueAsDefault<std::string>("OpenGL") == "Vulkan";
+}
 
 /*
  * Position and size of rectangular region within OpenGL display to render to.
@@ -553,6 +576,11 @@ static Result CreateGLScreen(bool coreContext, bool quadRendering, const std::st
 #ifndef SUPERMODEL_GLES
   // Initialize GLEW, allowing us to use features beyond OpenGL 1.2
   err = glewInit();
+  // On native Wayland, SDL creates an EGL-backed desktop OpenGL context. GLEW
+  // loads the OpenGL entry points successfully, but its final UNIX-specific
+  // GLX initialization has no current X11 display and reports this error.
+  // Accept only that expected GLX-only failure; all core loader errors and all
+  // errors on X11 or other SDL video drivers remain fatal.
   if (GLEW_OK != err && !(IsWaylandVideoDriver() && GLEW_ERROR_NO_GLX_DISPLAY == err))
   {
     ErrorLog("OpenGL initialization failed: %s\n", glewGetErrorString(err));
@@ -618,6 +646,268 @@ static Result ResizeGLScreen(unsigned *xOffsetPtr, unsigned *yOffsetPtr, unsigne
   }
 
   return SetGLGeometry(xOffsetPtr, yOffsetPtr, xResPtr, yResPtr, totalXResPtr, totalYResPtr, keepAspectRatio);
+}
+
+#ifdef SUPERMODEL_VULKAN
+/*
+ * Waits for the drawable size to settle and returns it.
+ *
+ * Both display servers apply window state asynchronously, so the size is only
+ * known once SDL has processed the server's reply. A Vulkan swapchain is a
+ * fixed-size object, so building one from a stale size leaves it mismatched with
+ * the window for as long as it lives. Bounded, so a server that never settles
+ * delays startup briefly rather than hanging.
+ */
+static void SettleVulkanDrawableSize(int *widthPtr, int *heightPtr)
+{
+  constexpr Uint32 timeoutMs = 500;
+  constexpr int stableReadsRequired = 3;
+
+  int width = 0;
+  int height = 0;
+  SDL_Vulkan_GetDrawableSize(s_window, &width, &height);
+
+  const Uint32 deadline = SDL_GetTicks() + timeoutMs;
+  int stableReads = 0;
+  while (SDL_GetTicks() < deadline)
+  {
+    // Let SDL consume the compositor's configure events.
+    SDL_PumpEvents();
+
+    int polledWidth = 0;
+    int polledHeight = 0;
+    SDL_Vulkan_GetDrawableSize(s_window, &polledWidth, &polledHeight);
+    if (polledWidth > 0 && polledHeight > 0 && polledWidth == width && polledHeight == height)
+    {
+      if (++stableReads >= stableReadsRequired)
+        break;
+    }
+    else
+    {
+      stableReads = 0;
+      width = polledWidth;
+      height = polledHeight;
+    }
+    SDL_Delay(8);
+  }
+
+  *widthPtr = width;
+  *heightPtr = height;
+}
+
+static Result SetVulkanGeometry(unsigned *xOffsetPtr, unsigned *yOffsetPtr, unsigned *xResPtr, unsigned *yResPtr, unsigned *totalXResPtr, unsigned *totalYResPtr, bool keepAspectRatio)
+{
+  // The swapchain is the authoritative size, because it is what the frame is
+  // actually presented through. SDL's window and drawable sizes are only
+  // requests plus whatever the display server has told SDL so far, and on
+  // Wayland they can lag the compositor or disagree with it outright. Laying the
+  // viewport out in one space while presenting in another is what puts the image
+  // in a corner, so prefer the extent the driver gave us and treat SDL as the
+  // fallback for the window that has no swapchain yet.
+  int actualWidth = 0;
+  int actualHeight = 0;
+  if (s_vulkanContext)
+  {
+    const VkExtent2D swapchain = s_vulkanContext->SwapchainExtent();
+    actualWidth = static_cast<int>(swapchain.width);
+    actualHeight = static_cast<int>(swapchain.height);
+  }
+  if (actualWidth <= 0 || actualHeight <= 0)
+    SettleVulkanDrawableSize(&actualWidth, &actualHeight);
+  if (actualWidth <= 0 || actualHeight <= 0)
+  {
+    // Minimized, or the surface has no size yet. Fall back to the window size so
+    // the caller still gets a sane rectangle.
+    SDL_GetWindowSize(s_window, &actualWidth, &actualHeight);
+  }
+  *totalXResPtr = static_cast<unsigned>(std::max(actualWidth, 0));
+  *totalYResPtr = static_cast<unsigned>(std::max(actualHeight, 0));
+
+  float outputWidth = static_cast<float>(*xResPtr);
+  float outputHeight = static_cast<float>(*yResPtr);
+  if (keepAspectRatio)
+  {
+    constexpr float model3Ratio = 496.0f / 384.0f;
+    if (outputHeight < outputWidth / model3Ratio)
+      outputWidth = outputHeight * model3Ratio;
+    if (outputWidth < outputHeight * model3Ratio)
+      outputHeight = outputWidth / model3Ratio;
+  }
+
+  *xOffsetPtr = (*xResPtr - static_cast<unsigned>(outputWidth)) / 2;
+  *yOffsetPtr = (*yResPtr - static_cast<unsigned>(outputHeight)) / 2;
+  if (static_cast<int>(*xResPtr) < actualWidth)
+    *xOffsetPtr += static_cast<unsigned>(actualWidth - static_cast<int>(*xResPtr)) / 2;
+  if (static_cast<int>(*yResPtr) < actualHeight)
+    *yOffsetPtr += static_cast<unsigned>(actualHeight - static_cast<int>(*yResPtr)) / 2;
+  *xResPtr = static_cast<unsigned>(outputWidth);
+  *yResPtr = static_cast<unsigned>(outputHeight);
+  return Result::OKAY;
+}
+
+static Result CreateVulkanScreen(bool quadRendering, const std::string &caption, int windowXPosition, int windowYPosition, bool borderless,
+                                 unsigned *xOffsetPtr, unsigned *yOffsetPtr, unsigned *xResPtr, unsigned *yResPtr,
+                                 unsigned *totalXResPtr, unsigned *totalYResPtr, bool keepAspectRatio, bool fullScreen)
+{
+  if (s_window != nullptr)
+    return ErrorLog("Internal error: CreateVulkanScreen() called more than once");
+  if (InitializeVideoSubsystem() != Result::OKAY)
+    return Result::FAIL;
+
+  // Deliberately not SDL_WINDOW_RESIZABLE, matching CreateGLScreen(): the render
+  // targets are sized once per resolution change through ResizeVideoScreen(), so
+  // a freely draggable border would present a stretched image from a swapchain
+  // that no longer matches those targets.
+  Uint32 windowFlags = SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN;
+  if (borderless)
+    windowFlags |= SDL_WINDOW_BORDERLESS;
+  s_window = SDL_CreateWindow(caption.c_str(), windowXPosition, windowYPosition, *xResPtr, *yResPtr, windowFlags);
+  if (s_window == nullptr)
+    return ErrorLog("Unable to create a Vulkan display: %s", SDL_GetError());
+
+  // Map the window, then go fullscreen, then build the swapchain. An unmapped
+  // window has no meaningful surface size - Wayland sends no configure event for
+  // an uncommitted surface and X11 applies fullscreen only on map - so a
+  // swapchain created first is pinned to the requested size while the window
+  // becomes something else. Unlike OpenGL, whose backbuffer SDL resizes for us,
+  // that mismatch is permanent. The cost is that the window appears just before
+  // the first frame rather than just after it.
+  SDL_ShowWindow(s_window);
+  SDL_RaiseWindow(s_window);
+
+  if (fullScreen)
+  {
+    int mappedWidth = 0;
+    int mappedHeight = 0;
+    SettleVulkanDrawableSize(&mappedWidth, &mappedHeight);
+
+    SetFullScreenRefreshRate(*xResPtr, *yResPtr);
+    if (SDL_SetWindowFullscreen(s_window, GetFullScreenWindowFlag()) < 0)
+    {
+      ErrorLog("Unable to enter fullscreen mode: %s", SDL_GetError());
+      SDL_DestroyWindow(s_window);
+      s_window = nullptr;
+      return Result::FAIL;
+    }
+  }
+
+  {
+    int settledWidth = 0;
+    int settledHeight = 0;
+    SettleVulkanDrawableSize(&settledWidth, &settledHeight);
+  }
+
+  s_vulkanContext = std::make_unique<Vulkan::Context>();
+  std::string error;
+  // quadRendering additionally requires VkPhysicalDeviceFeatures::geometryShader,
+  // which the Real3D quad pipeline is built from.
+  if (!s_vulkanContext->Init(s_window, s_runtime_config["VSync"].ValueAsDefault<bool>(true),
+                             quadRendering, &error))
+  {
+    ErrorLog("Unable to initialize Vulkan: %s", error.c_str());
+    s_vulkanContext.reset();
+    SDL_DestroyWindow(s_window);
+    s_window = nullptr;
+    return Result::FAIL;
+  }
+
+  s_vulkanScreenshots = std::make_unique<Vulkan::ScreenshotRecorder>(*s_vulkanContext);
+
+  const uint32_t version = s_vulkanContext->ApiVersion();
+  printf("GPU info: %s (Vulkan %u.%u.%u)\n\n",
+         s_vulkanContext->DeviceName(), VK_VERSION_MAJOR(version), VK_VERSION_MINOR(version), VK_VERSION_PATCH(version));
+  s_vulkanContext->LogDeviceInfo();
+
+  // Exercise both frames-in-flight before renderer creation. This is a native
+  // Vulkan clear/present path; no OpenGL context exists for this window.
+  for (unsigned i = 0; i < 2; ++i)
+  {
+    error.clear();
+    if (!s_vulkanContext->BeginFrame(&error) || !s_vulkanContext->EndFrame(&error))
+    {
+      ErrorLog("Vulkan initial presentation failed: %s", error.c_str());
+      s_vulkanScreenshots.reset();
+      s_vulkanContext.reset();
+      SDL_DestroyWindow(s_window);
+      s_window = nullptr;
+      return Result::FAIL;
+    }
+  }
+
+  return SetVulkanGeometry(xOffsetPtr, yOffsetPtr, xResPtr, yResPtr, totalXResPtr, totalYResPtr, keepAspectRatio);
+}
+
+static Result ResizeVulkanScreen(unsigned *xOffsetPtr, unsigned *yOffsetPtr, unsigned *xResPtr, unsigned *yResPtr,
+                                 unsigned *totalXResPtr, unsigned *totalYResPtr, bool keepAspectRatio, bool fullScreen)
+{
+  if (fullScreen)
+    SetFullScreenRefreshRate(*xResPtr, *yResPtr);
+  if (SDL_SetWindowFullscreen(s_window, fullScreen ? GetFullScreenWindowFlag() : 0) < 0)
+    return ErrorLog("Unable to enter %s mode: %s", fullScreen ? "fullscreen" : "windowed", SDL_GetError());
+
+  s_vulkanContext->RequestSwapchainRecreation();
+  std::string error;
+  // Wait for the compositor to apply the state change before rebuilding the
+  // swapchain, otherwise it is rebuilt at the outgoing size and the image lands
+  // in a corner. A minimized drawable is intentionally deferred to the next
+  // frame, which BeginFrame() handles.
+  int drawableWidth = 0;
+  int drawableHeight = 0;
+  SettleVulkanDrawableSize(&drawableWidth, &drawableHeight);
+  if (drawableWidth > 0 && drawableHeight > 0 && !s_vulkanContext->RecreateSwapchain(&error))
+    return ErrorLog("Unable to recreate the Vulkan swapchain: %s", error.c_str());
+
+  return SetVulkanGeometry(xOffsetPtr, yOffsetPtr, xResPtr, yResPtr, totalXResPtr, totalYResPtr, keepAspectRatio);
+}
+#endif
+
+static Result CreateVideoScreen(bool coreContext, bool quadRendering, const std::string &caption, int windowXPosition, int windowYPosition, bool borderless,
+                                unsigned *xOffsetPtr, unsigned *yOffsetPtr, unsigned *xResPtr, unsigned *yResPtr,
+                                unsigned *totalXResPtr, unsigned *totalYResPtr, bool keepAspectRatio, bool fullScreen)
+{
+  if (!IsVulkanBackend())
+    return CreateGLScreen(coreContext, quadRendering, caption, windowXPosition, windowYPosition, borderless,
+                          xOffsetPtr, yOffsetPtr, xResPtr, yResPtr, totalXResPtr, totalYResPtr, keepAspectRatio, fullScreen);
+#ifdef SUPERMODEL_VULKAN
+  return CreateVulkanScreen(quadRendering, caption, windowXPosition, windowYPosition, borderless,
+                            xOffsetPtr, yOffsetPtr, xResPtr, yResPtr, totalXResPtr, totalYResPtr, keepAspectRatio, fullScreen);
+#else
+  // VULKAN=1 is independent of GLES; either OpenGL variant can host the Vulkan
+  // backend because the two renderers share no graphics API state.
+  return ErrorLog("GraphicsBackend=Vulkan is unavailable in this binary. Rebuild with VULKAN=1: 'make -f Makefiles/Makefile.UNIX VULKAN=1' on Linux (optionally with GLES=1), or 'make -f Makefiles/Makefile.OSX VULKAN=1' on macOS, which needs MoltenVK.");
+#endif
+}
+
+static Result ResizeVideoScreen(unsigned *xOffsetPtr, unsigned *yOffsetPtr, unsigned *xResPtr, unsigned *yResPtr,
+                                unsigned *totalXResPtr, unsigned *totalYResPtr, bool keepAspectRatio, bool fullScreen)
+{
+#ifdef SUPERMODEL_VULKAN
+  if (IsVulkanBackend())
+    return ResizeVulkanScreen(xOffsetPtr, yOffsetPtr, xResPtr, yResPtr, totalXResPtr, totalYResPtr, keepAspectRatio, fullScreen);
+#endif
+  return ResizeGLScreen(xOffsetPtr, yOffsetPtr, xResPtr, yResPtr, totalXResPtr, totalYResPtr, keepAspectRatio, fullScreen);
+}
+
+static void DestroyVideoScreen()
+{
+#ifdef SUPERMODEL_VULKAN
+  if (s_vulkanContext)
+  {
+    // Both hold Vulkan objects owned by the Context, and the recorder may still
+    // owe a screenshot file, which its destructor writes.
+    s_vulkanCrosshair.reset();
+    s_vulkanScreenshots.reset();
+    s_vulkanContext.reset();
+    if (s_window != nullptr)
+    {
+      SDL_DestroyWindow(s_window);
+      s_window = nullptr;
+    }
+    return;
+  }
+#endif
+  DestroyGLScreen();
+  s_window = nullptr;
 }
 
 /*
@@ -822,6 +1112,20 @@ void Screenshot()
         << ").bmp";
 
     std::cout << "Screenshot created: " << file << std::endl;
+
+#ifdef SUPERMODEL_VULKAN
+    if (IsVulkanBackend())
+    {
+        // The frame the user is looking at is still being rendered. Queue the
+        // request; the next frame records a copy of its output image and the file
+        // is written once that frame's fence signals, without stalling the frame
+        // loop. See Vulkan::ScreenshotRecorder.
+        if (s_vulkanScreenshots)
+            s_vulkanScreenshots->Request(file);
+        return;
+    }
+#endif
+
     SaveFrameBuffer(file);
 }
 
@@ -1102,17 +1406,61 @@ static uint32_t currentInputs = 0;
 
 bool BeginFrameVideo()
 {
+#ifdef SUPERMODEL_VULKAN
+  if (IsVulkanBackend())
+  {
+    std::string error;
+    s_vulkanFrameActive = s_vulkanContext != nullptr && s_vulkanContext->BeginFrame(&error);
+    if (!s_vulkanFrameActive && !error.empty())
+    {
+      ErrorLog("Vulkan frame acquisition failed: %s", error.c_str());
+      SDL_Event quitEvent{};
+      quitEvent.type = SDL_QUIT;
+      SDL_PushEvent(&quitEvent);
+    }
+    return s_vulkanFrameActive;
+  }
+#endif
   return true;
 }
 
 void EndFrameVideo()
 {
-  // Show crosshairs for light gun games
-  if (videoInputs)
-    s_crosshair->Update(currentInputs, videoInputs, xOffset, yOffset, xRes, yRes);
+#ifdef SUPERMODEL_VULKAN
+  if (IsVulkanBackend())
+  {
+    if (s_vulkanFrameActive)
+    {
+      // Show crosshairs for light gun games. The GL path draws them into the back
+      // buffer after post processing; this draws them into the output image the
+      // Context is about to present, which is the same point in the frame.
+      if (videoInputs && s_vulkanCrosshair)
+        s_vulkanCrosshair->Update(currentInputs, videoInputs, xOffset, yOffset, xRes, yRes);
 
-  // Swap the buffers
-  SDL_GL_SwapWindow(s_window);
+      // Recorded last, so a screenshot contains the crosshairs, as it did in GL.
+      if (s_vulkanScreenshots)
+        s_vulkanScreenshots->RecordPending();
+
+      std::string error;
+      if (!s_vulkanContext->EndFrame(&error))
+      {
+        ErrorLog("Vulkan frame presentation failed: %s", error.c_str());
+        SDL_Event quitEvent{};
+        quitEvent.type = SDL_QUIT;
+        SDL_PushEvent(&quitEvent);
+      }
+      s_vulkanFrameActive = false;
+    }
+  }
+  else
+#endif
+  {
+    // Show crosshairs for light gun games
+    if (videoInputs)
+      s_crosshair->Update(currentInputs, videoInputs, xOffset, yOffset, xRes, yRes);
+
+    SDL_GL_SwapWindow(s_window);
+  }
 
   // Normal launches stay hidden through sizing, fullscreen transition, and
   // renderer initialization. Reveal only after the first complete frame.
@@ -1213,8 +1561,10 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
   snprintf(baseTitleStr, sizeof(baseTitleStr), "Supermodel - %s", game.title.c_str());
   SDL_SetWindowTitle(s_window, baseTitleStr);
 
-  // Info log GL information
-  PrintGLInfo(false, true, false);
+  // Log API information. Vulkan device information was emitted during
+  // Context initialization; querying GL without a GL context is invalid.
+  if (!IsVulkanBackend())
+    PrintGLInfo(false, true, false);
 
   // Initialize audio system
   SetAudioType(game.audio);
@@ -1243,32 +1593,127 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
   uint64_t perfCountPerFrame = s_perfCounterFrequency * 1000 / GetDesiredRefreshRateMilliHz();
   uint64_t nextTime = 0;
 
-  // Initialize the renderers
-  SuperAA* superAA = new SuperAA(aaValue, CRTcolors);
-  CRender2D *Render2D = nullptr;
+  // Initialize the renderers. The Vulkan bundle is an entirely separate set of
+  // classes that never constructs or calls OpenGL objects.
+  IPostProcessor *postProcessor = nullptr;
+  IRender2D *Render2D = nullptr;
   IRender3D *Render3D = nullptr;
+  SuperAA *glPostProcessor = nullptr;
+#ifdef SUPERMODEL_VULKAN
+  Vulkan::PostProcess *vulkanPostProcessor = nullptr;
+#endif
   UpscaleMode upscaleMode = (UpscaleMode)s_runtime_config["UpscaleMode"].ValueAs<int>();
 
-  if (Result::OKAY != superAA->Init(totalXRes, totalYRes))  // pass actual frame sizes here
+  // Re-lays out the display and every extent-dependent renderer for the current
+  // window state. Used by the fullscreen toggle and, on both X11 and Wayland, by
+  // the recovery path below when the display server changes the surface size
+  // behind our back.
+  auto relayoutVideo = [&]() -> bool
   {
-    ErrorLog("Unable to initialize supersampling/CRT rendering.");
-    goto QuitError;
+    delete Render2D;
+    Render2D = nullptr;
+
+    totalXRes = xRes = s_runtime_config["XResolution"].ValueAs<unsigned>();
+    totalYRes = yRes = s_runtime_config["YResolution"].ValueAs<unsigned>();
+    const bool stretchc = s_runtime_config["Stretch"].ValueAs<bool>();
+    const bool fullscreenc = s_runtime_config["FullScreen"].ValueAs<bool>();
+    if (Result::OKAY != ResizeVideoScreen(&xOffset, &yOffset, &xRes, &yRes, &totalXRes, &totalYRes, !stretchc, fullscreenc))
+      return false;
+
+#ifdef SUPERMODEL_VULKAN
+    if (IsVulkanBackend())
+    {
+      auto *vulkanRender2D = new Vulkan::Render2D(*s_vulkanContext, s_runtime_config);
+      Render2D = vulkanRender2D;
+      // Same order as at startup: scene targets, then output resolution, then
+      // the renderers that sample them.
+      if (Result::OKAY != Render3D->Init(xOffset * aaValue, yOffset * aaValue, xRes * aaValue, yRes * aaValue,
+                                         totalXRes * aaValue, totalYRes * aaValue, 0) ||
+          Result::OKAY != vulkanPostProcessor->Init(totalXRes, totalYRes) ||
+          Result::OKAY != vulkanRender2D->Init(xOffset * aaValue, yOffset * aaValue, xRes * aaValue, yRes * aaValue,
+                                              totalXRes * aaValue, totalYRes * aaValue, upscaleMode))
+        return false;
+    }
+    else
+#endif
+    {
+      if (Result::OKAY != glPostProcessor->Init(totalXRes, totalYRes))
+      {
+        ErrorLog("Unable to reinitialize supersampling/CRT rendering.");
+        return false;
+      }
+      auto *glRender2D = new CRender2D(s_runtime_config);
+      Render2D = glRender2D;
+      if (Result::OKAY != glRender2D->Init(xOffset * aaValue, yOffset * aaValue, xRes * aaValue, yRes * aaValue,
+                                           totalXRes * aaValue, totalYRes * aaValue,
+                                           glPostProcessor->GetTargetID(), upscaleMode) ||
+          Result::OKAY != Render3D->Init(xOffset * aaValue, yOffset * aaValue, xRes * aaValue, yRes * aaValue,
+                                        totalXRes * aaValue, totalYRes * aaValue,
+                                        glPostProcessor->GetTargetID()))
+        return false;
+    }
+
+    Model3->AttachRenderers(Render2D, Render3D, postProcessor);
+    return true;
+  };
+
+
+#ifdef SUPERMODEL_VULKAN
+  if (IsVulkanBackend())
+  {
+    // Ordering matters. The 3D renderer sizes the scene render targets from the
+    // supersampled geometry it is given, the post processor then states the
+    // resolution the output image is presented at, and the 2D renderer and the
+    // crosshairs build their descriptor sets against the final targets.
+    Render3D = new Vulkan::VulkanNew3D(*s_vulkanContext, s_runtime_config, Model3->GetGame().name);
+    vulkanPostProcessor = new Vulkan::PostProcess(*s_vulkanContext, aaValue, CRTcolors);
+    postProcessor = vulkanPostProcessor;
+    auto *vulkanRender2D = new Vulkan::Render2D(*s_vulkanContext, s_runtime_config);
+    Render2D = vulkanRender2D;
+
+    if (Result::OKAY != Render3D->Init(xOffset*aaValue, yOffset*aaValue, xRes*aaValue, yRes*aaValue,
+                                       totalXRes*aaValue, totalYRes*aaValue, 0) ||
+        Result::OKAY != vulkanPostProcessor->Init(totalXRes, totalYRes) ||
+        Result::OKAY != vulkanRender2D->Init(xOffset*aaValue, yOffset*aaValue, xRes*aaValue, yRes*aaValue,
+                                            totalXRes*aaValue, totalYRes*aaValue, upscaleMode))
+      goto QuitError;
+
+    // The crosshairs need the render targets and the pipeline cache, so they are
+    // initialized here rather than where the object was constructed.
+    if (s_vulkanCrosshair && s_vulkanCrosshair->Init() != Result::OKAY)
+    {
+      ErrorLog("Unable to initialize the Vulkan crosshairs.\n");
+      goto QuitError;
+    }
+  }
+  else
+#endif
+  {
+    glPostProcessor = new SuperAA(aaValue, CRTcolors);
+    postProcessor = glPostProcessor;
+    if (Result::OKAY != glPostProcessor->Init(totalXRes, totalYRes))
+    {
+      ErrorLog("Unable to initialize supersampling/CRT rendering.");
+      goto QuitError;
+    }
+
+    auto *glRender2D = new CRender2D(s_runtime_config);
+    Render2D = glRender2D;
+#if !defined(SUPERMODEL_OSX) && !defined(SUPERMODEL_GLES)
+    Render3D = s_runtime_config["New3DEngine"].ValueAs<bool>() ? ((IRender3D *) new New3D::CNew3D(s_runtime_config, Model3->GetGame().name)) : ((IRender3D *) new Legacy3D::CLegacy3D(s_runtime_config));
+#else
+    Render3D = (IRender3D *) new New3D::CNew3D(s_runtime_config, Model3->GetGame().name);
+#endif
+    if (Result::OKAY != glRender2D->Init(xOffset*aaValue, yOffset*aaValue, xRes*aaValue, yRes*aaValue,
+                                         totalXRes*aaValue, totalYRes*aaValue,
+                                         glPostProcessor->GetTargetID(), upscaleMode) ||
+        Result::OKAY != Render3D->Init(xOffset*aaValue, yOffset*aaValue, xRes*aaValue, yRes*aaValue,
+                                      totalXRes*aaValue, totalYRes*aaValue,
+                                      glPostProcessor->GetTargetID()))
+      goto QuitError;
   }
 
-  Render2D = new CRender2D(s_runtime_config);
-#if !defined(SUPERMODEL_OSX) && !defined(SUPERMODEL_GLES)
-  Render3D = s_runtime_config["New3DEngine"].ValueAs<bool>() ? ((IRender3D *) new New3D::CNew3D(s_runtime_config, Model3->GetGame().name)) : ((IRender3D *) new Legacy3D::CLegacy3D(s_runtime_config));
-#else
-  // Legacy renderer is not supported on macOS or OpenGL ES builds; always use New3D
-  Render3D = (IRender3D *) new New3D::CNew3D(s_runtime_config, Model3->GetGame().name);
-#endif
-
-  if (Result::OKAY != Render2D->Init(xOffset*aaValue, yOffset*aaValue, xRes*aaValue, yRes*aaValue, totalXRes*aaValue, totalYRes*aaValue, superAA->GetTargetID(), upscaleMode))
-    goto QuitError;
-  if (Result::OKAY != Render3D->Init(xOffset*aaValue, yOffset*aaValue, xRes*aaValue, yRes*aaValue, totalXRes*aaValue, totalYRes*aaValue, superAA->GetTargetID()))
-    goto QuitError;
-
-  Model3->AttachRenderers(Render2D,Render3D, superAA);
+  Model3->AttachRenderers(Render2D, Render3D, postProcessor);
 
   // Reset emulator
   Model3->Reset();
@@ -1288,7 +1733,9 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
 #endif // SUPERMODEL_DEBUGGER
 
   // Reveal the finalized window after EndFrameVideo presents the first frame.
-  s_showWindowAfterNextSwap = true;
+  // The Vulkan path has already mapped the window, because its swapchain cannot
+  // be sized from an unmapped surface; see CreateVulkanScreen().
+  s_showWindowAfterNextSwap = !IsVulkanBackend();
 
   // Emulate!
   fpsFramesElapsed = 0;
@@ -1314,6 +1761,24 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       Model3->RenderFrame();
     else
       Model3->RunFrame();
+
+#ifdef SUPERMODEL_VULKAN
+    // The display server can resize the surface without us asking: a Wayland
+    // compositor reconfiguring the output or applying a state change late, an X11
+    // window manager overriding the geometry, or a fullscreen mode switch landing
+    // on a different resolution. The swapchain follows automatically, but the
+    // render targets and the centred content rectangle do not, so re-lay them out
+    // rather than presenting a rescaled frame. Same handling for both display
+    // servers; only the situations that trigger it differ.
+    if (s_vulkanContext && s_vulkanContext->SurfaceRelayoutNeeded())
+    {
+      const VkExtent2D surface = s_vulkanContext->SwapchainExtent();
+      InfoLog("The display server resized the Vulkan surface to %ux%u; re-laying out the display.",
+              surface.width, surface.height);
+      if (!relayoutVideo())
+        goto QuitError;
+    }
+#endif
 
 #ifdef SUPERMODEL_DEBUGGER
     bool processUI = true;
@@ -1396,32 +1861,10 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       // Toggle emulator fullscreen
       s_runtime_config.Get("FullScreen").SetValue(!s_runtime_config["FullScreen"].ValueAs<bool>());
 
-      // Delete renderers and recreate them afterwards since GL context will most likely be lost when switching from/to fullscreen
-      delete Render2D;
-      Render2D = nullptr;
-
-      // Resize screen
-      totalXRes = xRes = s_runtime_config["XResolution"].ValueAs<unsigned>();
-      totalYRes = yRes = s_runtime_config["YResolution"].ValueAs<unsigned>();
-      bool stretchc = s_runtime_config["Stretch"].ValueAs<bool>();
-      bool fullscreenc = s_runtime_config["FullScreen"].ValueAs<bool>();
-      if (Result::OKAY != ResizeGLScreen(&xOffset,&yOffset,&xRes,&yRes,&totalXRes,&totalYRes,!stretchc,fullscreenc))
+      // Recreates only the extent-dependent renderers. Vulkan keeps its device
+      // and persistent resources while rebuilding the swapchain.
+      if (!relayoutVideo())
         goto QuitError;
-
-      // Recreate renderers and attach to the emulator
-      if (Result::OKAY != superAA->Init(totalXRes, totalYRes))
-      {
-        ErrorLog("Unable to reinitialize supersampling/CRT rendering.");
-        goto QuitError;
-      }
-      Render2D = new CRender2D(s_runtime_config);
-
-      if (Result::OKAY != Render2D->Init(xOffset * aaValue, yOffset * aaValue, xRes * aaValue, yRes * aaValue, totalXRes * aaValue, totalYRes * aaValue, superAA->GetTargetID(), upscaleMode))
-        goto QuitError;
-      if (Result::OKAY != Render3D->Init(xOffset * aaValue, yOffset * aaValue, xRes * aaValue, yRes * aaValue, totalXRes * aaValue, totalYRes * aaValue, superAA->GetTargetID()))
-        goto QuitError;
-
-      Model3->AttachRenderers(Render2D, Render3D, superAA);
 
       Inputs->GetInputSystem()->SetMouseVisibility(!s_runtime_config["FullScreen"].ValueAs<bool>());
     }
@@ -1532,11 +1975,13 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       // Dump input states
       Inputs->DumpState(&game);
     }
+#endif
     else if (Inputs->uiDumpTimings->Pressed())
     {
+      // Per-frame stage timings, so a build without the debugger can still be profiled
       dumpTimings = !dumpTimings;
+      printf("Frame timings: %s\n", dumpTimings ? "On" : "Off");
     }
-#endif
     else if (Inputs->uiSelectCrosshairs->Pressed() && gameHasLightguns)
     {
       int crosshairs = (s_runtime_config["Crosshairs"].ValueAs<unsigned>() + 1) & 3;
@@ -1627,7 +2072,7 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
   // Shut down renderers
   delete Render2D;
   delete Render3D;
-  delete superAA;
+  delete postProcessor;
 
   return 0;
 
@@ -1635,7 +2080,7 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
 QuitError:
   delete Render2D;
   delete Render3D;
-  delete superAA;
+  delete postProcessor;
 
   return 1;
 }
@@ -1791,6 +2236,7 @@ Util::Config::Node DefaultConfig()
   config.Set("ForceFeedback", false, "ForceFeedback");
   
   // Platform-specific/UI
+  config.Set<std::string>("GraphicsBackend", "OpenGL", "Video", "", "", { "OpenGL", "Vulkan" });
   config.Set("New3DEngine", true, "Video");
   config.Set("QuadRendering", false, "Video");
   config.Set("XResolution", 496, "Video");
@@ -2106,6 +2552,7 @@ static void Help(void)
   puts("  -load-state=<file>      Load save state after starting");
   puts("");
   puts("Video Options:");
+  puts("  -graphics-backend=<s>   Graphics backend: OpenGL (default) or Vulkan");
   puts("  -res=<x>,<y>            Resolution [Default: 496,384]");
   puts("  -ss=<n>                 Supersampling (range 1-8)");
   puts("  -render-scale=<n>       New3D resolution scale: 0=output, 1-8=fixed scale");
@@ -2226,6 +2673,7 @@ static ParsedCommandLine ParseCommandLine(int argc, char **argv)
     { "-ppc-frequency",         "PowerPCFrequency"        },
     { "-crosshairs",            "Crosshairs"              },
     { "-crosshair-style",       "CrosshairStyle"          },
+    { "-graphics-backend",      "GraphicsBackend"         },
     { "-vert-shader",           "VertexShader"            },
     { "-frag-shader",           "FragmentShader"          },
     { "-sound-volume",          "SoundVolume"             },
@@ -2628,6 +3076,17 @@ int main(int argc, char **argv)
   }
   LogConfig(s_runtime_config);
 
+  // Reject unrecognized backends rather than silently using OpenGL, so a typo
+  // cannot be mistaken for a working Vulkan selection.
+  {
+    const std::string requestedBackend = s_runtime_config["GraphicsBackend"].ValueAsDefault<std::string>("OpenGL");
+    if (requestedBackend != "OpenGL" && requestedBackend != "Vulkan")
+    {
+      ErrorLog("Unknown GraphicsBackend '%s'. Valid values are OpenGL and Vulkan.", requestedBackend.c_str());
+      return 1;
+    }
+  }
+
 #ifdef SUPERMODEL_GLES
   if (!s_runtime_config["New3DEngine"].ValueAs<bool>())
   {
@@ -2635,6 +3094,30 @@ int main(int argc, char **argv)
     return 1;
   }
 #endif
+
+  if (IsVulkanBackend())
+  {
+#ifndef SUPERMODEL_VULKAN
+    ErrorLog("GraphicsBackend=Vulkan is unavailable in this binary. Rebuild with VULKAN=1: 'make -f Makefiles/Makefile.UNIX VULKAN=1' on Linux (optionally with GLES=1), or 'make -f Makefiles/Makefile.OSX VULKAN=1' on macOS, which needs MoltenVK.");
+    return 1;
+#else
+    // The two genuinely unimplemented features. Both are OpenGL-only by
+    // construction rather than by choice, so they are reported as the specific
+    // features they are.
+    if (!s_runtime_config["New3DEngine"].ValueAs<bool>())
+    {
+      ErrorLog("The Legacy3D engine has no Vulkan implementation: it is built directly on fixed-function OpenGL state. Use New3DEngine=true (drop -legacy3d), or GraphicsBackend=OpenGL.");
+      return 1;
+    }
+#ifdef DEBUG
+    if (!s_gfxStatePath.empty())
+    {
+      ErrorLog("The -gfx-state graphics analyzer reads back the OpenGL framebuffer directly and has no Vulkan implementation. Use GraphicsBackend=OpenGL.");
+      return 1;
+    }
+#endif
+#endif
+  }
 
   // Initialize SDL (individual subsystems get initialized later)
   if (SDL_Init(0) != 0)
@@ -2683,19 +3166,30 @@ int main(int argc, char **argv)
     windowCaption += " - " + game.title;
   }
 
-  if (Result::OKAY != CreateGLScreen(s_runtime_config["New3DEngine"].ValueAs<bool>(), s_runtime_config["QuadRendering"].ValueAs<bool>(), windowCaption, windowXPosition, windowYPosition, borderless, &xOffset, &yOffset, &xRes, &yRes, &totalXRes, &totalYRes, keepAspectRatio, startupFullscreen))
+  if (Result::OKAY != CreateVideoScreen(s_runtime_config["New3DEngine"].ValueAs<bool>(), s_runtime_config["QuadRendering"].ValueAs<bool>(), windowCaption, windowXPosition, windowYPosition, borderless, &xOffset, &yOffset, &xRes, &yRes, &totalXRes, &totalYRes, keepAspectRatio, startupFullscreen))
   {
     exitCode = 1;
     goto Exit;
   }
 
-  // Create Crosshair
-  s_crosshair = new CCrosshair(s_runtime_config);
-  if (s_crosshair->Init() != Result::OKAY)
+  // Crosshairs for light gun games. Both backends have an implementation. The
+  // Vulkan one is only constructed here; its Init() needs the render targets and
+  // the pipeline cache, so it runs once the renderers exist.
+#ifdef SUPERMODEL_VULKAN
+  if (IsVulkanBackend())
   {
+    s_vulkanCrosshair = std::make_unique<Vulkan::Crosshair>(*s_vulkanContext, s_runtime_config);
+  }
+  else
+#endif
+  {
+    s_crosshair = new CCrosshair(s_runtime_config);
+    if (s_crosshair->Init() != Result::OKAY)
+    {
       ErrorLog("Unable to load bitmap crosshair texture\n");
       exitCode = 1;
       goto Exit;
+    }
   }
 
   // Create Model 3 emulator
@@ -2767,7 +3261,7 @@ int main(int argc, char **argv)
     {
       totalXRes = xRes = s_runtime_config["XResolution"].ValueAs<unsigned>();
       totalYRes = yRes = s_runtime_config["YResolution"].ValueAs<unsigned>();
-      if (Result::OKAY != ResizeGLScreen(&xOffset, &yOffset, &xRes, &yRes, &totalXRes, &totalYRes, keepAspectRatio, true))
+      if (Result::OKAY != ResizeVideoScreen(&xOffset, &yOffset, &xRes, &yRes, &totalXRes, &totalYRes, keepAspectRatio, true))
       {
         exitCode = 1;
         goto Exit;
@@ -2833,7 +3327,7 @@ Exit:
   delete Inputs;
   delete Outputs;
   delete s_crosshair;
-  DestroyGLScreen();
+  DestroyVideoScreen();
   SDL_Quit();
 
   if (exitCode)
