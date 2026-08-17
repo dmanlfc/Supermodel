@@ -91,6 +91,16 @@ public:
   bool Init(SDL_Window *window, bool vsync, bool quadRendering, std::string *error);
   void Shutdown();
 
+  // The exact VkPhysicalDeviceProperties::deviceName to prefer, or empty/"Auto"
+  // to auto-select (preferring a non-integrated GPU). Call before Init().
+  void SetPreferredDeviceName(const std::string &name) { m_preferredDeviceName = name; }
+
+  // Enumerates the names of every Vulkan physical device on the system via a
+  // throwaway instance (no surface needed). Returned strings are exactly what
+  // Vulkan reports, so they can be written to the config and matched on later.
+  // Empty on any failure (no loader, no instance, no devices).
+  static std::vector<std::string> EnumerateDeviceNames();
+
   // Returns false while minimized or when swapchain recreation is deferred; in
   // that case *error is left empty and the caller should simply skip the frame.
   bool BeginFrame(std::string *error);
@@ -269,6 +279,10 @@ private:
   bool m_quadRenderingRequested = false;
   bool m_geometryShaderEnabled = false;
   bool m_loaderLoaded = false;
+
+  // Exact device name to prefer; empty or "Auto" means auto-select. Consulted by
+  // SelectPhysicalDevice().
+  std::string m_preferredDeviceName;
   bool m_recreateRequested = false;
   // Extent already rebuilt once in response to VK_SUBOPTIMAL_KHR.
   VkExtent2D m_suboptimalExtent{};

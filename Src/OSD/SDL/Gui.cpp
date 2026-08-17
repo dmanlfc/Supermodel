@@ -14,6 +14,10 @@
 #include "../Pkgs/imgui/imgui_impl_opengl3.h"
 #include "../Src/Util/NewConfig.h"
 #include "Util/ConfigBuilders.h"
+#include <algorithm>
+#ifdef SUPERMODEL_VULKAN
+#include "Graphics/Vulkan/VulkanContext.h"
+#endif
 #include "../Src/OSD/SDL/SDLInputSystem.h"
 #include "../Src/Inputs/Inputs.h"
 #include "Main.h"
@@ -228,6 +232,26 @@ static void CreateControls(Util::Config::Node& config, const std::string group)
                         };
 
 
+                        // The Vulkan GPU picker is meaningless under OpenGL, so grey it out
+                        // (following the live GraphicsBackend selection, not just the saved one).
+                        bool disabledControl = false;
+#ifdef SUPERMODEL_VULKAN
+                        if (key == "VulkanDevice") {
+                            if (const Util::Config::Node* backend = config.TryGet("GraphicsBackend")) {
+                                if (auto bVal = backend->GetValue()) {
+                                    if (auto bRange = bVal->GetValueRange()) {
+                                        if (auto bStr = std::get_if<std::string>(&bRange->tempValue)) {
+                                            disabledControl = (*bStr == "OpenGL");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+#endif
+                        if (disabledControl) {
+                            ImGui::BeginDisabled(true);
+                        }
+
                         switch (index) {
                         case 0:             // bool
                         {
@@ -287,6 +311,10 @@ static void CreateControls(Util::Config::Node& config, const std::string group)
 
                             break;
                         }
+                        }
+
+                        if (disabledControl) {
+                            ImGui::EndDisabled();
                         }
                     }
                 }
@@ -812,6 +840,26 @@ std::vector<std::string> RunGUI(const std::string& configPath, Util::Config::Nod
         std::cerr << "SDL could not initialize! Error: " << SDL_GetError() << std::endl;
         return {};
     }
+
+#ifdef SUPERMODEL_VULKAN
+    // Fill the Vulkan GPU picker with the exact device names this system reports, so the
+    // generic Video-tab control renders them as a combo. "Auto" leaves the choice to the
+    // renderer (which prefers a non-integrated GPU); a configured but currently absent
+    // device is kept in the list so opening the GUI never silently drops it.
+    {
+        std::vector<std::string> options{ "Auto" };
+        for (const std::string& name : Vulkan::Context::EnumerateDeviceNames()) {
+            if (std::find(options.begin(), options.end(), name) == options.end()) {
+                options.push_back(name);
+            }
+        }
+        std::string current = config["VulkanDevice"].ValueAsDefault<std::string>("Auto");
+        if (std::find(options.begin(), options.end(), current) == options.end()) {
+            options.push_back(current);
+        }
+        config.Set<std::string>("VulkanDevice", current, "Video", "", "", options);
+    }
+#endif
 
     // Set OpenGL attributes
 #ifdef SUPERMODEL_GLES

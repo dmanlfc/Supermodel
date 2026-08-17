@@ -799,6 +799,9 @@ static Result CreateVulkanScreen(bool quadRendering, const std::string &caption,
 
   s_vulkanContext = std::make_unique<Vulkan::Context>();
   std::string error;
+  // Honor a configured GPU by exact name; "Auto" (the default) leaves the renderer to
+  // prefer a non-integrated device.
+  s_vulkanContext->SetPreferredDeviceName(s_runtime_config["VulkanDevice"].ValueAsDefault<std::string>("Auto"));
   // quadRendering additionally requires VkPhysicalDeviceFeatures::geometryShader,
   // which the Real3D quad pipeline is built from.
   if (!s_vulkanContext->Init(s_window, s_runtime_config["VSync"].ValueAsDefault<bool>(true),
@@ -2237,6 +2240,12 @@ Util::Config::Node DefaultConfig()
   
   // Platform-specific/UI
   config.Set<std::string>("GraphicsBackend", "OpenGL", "Video", "", "", { "OpenGL", "Vulkan" });
+#ifdef SUPERMODEL_VULKAN
+  // Exact VkPhysicalDeviceProperties::deviceName to run Vulkan on, or "Auto" to let
+  // the renderer pick (preferring a non-integrated GPU). The GUI fills the selectable
+  // names in at runtime; only "Auto" is known statically.
+  config.Set<std::string>("VulkanDevice", "Auto", "Video", "", "", { "Auto" });
+#endif
   config.Set("New3DEngine", true, "Video");
   config.Set("QuadRendering", false, "Video");
   config.Set("XResolution", 496, "Video");

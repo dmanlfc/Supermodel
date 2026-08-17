@@ -932,6 +932,7 @@ void VulkanNew3D::BeginScenePass(SceneTargets::ScenePass pass)
   m_boundPipeline = VK_NULL_HANDLE;
   m_lastPipeline = VK_NULL_HANDLE;
   m_descriptorBound = false;
+  m_lastPushValid = false;
 }
 
 void VulkanNew3D::EndScenePass()
@@ -943,6 +944,7 @@ void VulkanNew3D::EndScenePass()
   m_boundPipeline = VK_NULL_HANDLE;
   m_lastPipeline = VK_NULL_HANDLE;
   m_descriptorBound = false;
+  m_lastPushValid = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -1313,8 +1315,16 @@ bool VulkanNew3D::RenderScene(int priority, bool renderOverlay, New3D::Layer lay
         if (!BindMeshUniforms(commandBuffer, layout))
           continue;
 
-        vkCmdPushConstants(commandBuffer, layout, kR3DPushConstantRange.stageFlags, 0,
-                           static_cast<uint32_t>(sizeof(m_push)), &m_push);
+        // The block persists across draws sharing this layout, so only re-push it
+        // when a field actually changed rather than once per mesh as GL's loose
+        // uniforms did not require.
+        if (!m_lastPushValid || std::memcmp(&m_lastPush, &m_push, sizeof(m_push)) != 0)
+        {
+          vkCmdPushConstants(commandBuffer, layout, kR3DPushConstantRange.stageFlags, 0,
+                             static_cast<uint32_t>(sizeof(m_push)), &m_push);
+          m_lastPush = m_push;
+          m_lastPushValid = true;
+        }
 
         const VkDeviceSize bindOffset = VertexBindOffsetFor(mesh);
         if (bindOffset != boundVertexOffset)

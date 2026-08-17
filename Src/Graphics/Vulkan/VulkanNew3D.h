@@ -178,8 +178,15 @@ private:
   R3DUniforms m_uniforms{};
   R3DUniforms m_lastUniforms{};
   R3DModelPushConstants m_push{};
+  R3DModelPushConstants m_lastPush{};
   VkDeviceSize m_lastUniformOffset = 0;
   bool m_lastUniformValid = false;
+
+  // The push block only changes per model (ApplyModelState) plus the per-mesh
+  // translatorMap bool, but push constants persist within a command buffer for a
+  // compatible layout, so dirty-checking skips most re-pushes. Cleared at pass
+  // boundaries because an intervening pipeline with another layout disturbs them.
+  bool m_lastPushValid = false;
 
   VkPipeline m_boundPipeline = VK_NULL_HANDLE;
 

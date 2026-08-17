@@ -330,10 +330,16 @@ bool Context::SelectPhysicalDevice(std::string *error)
   // "no compatible device".
   std::string independentBlendRejection;
 
-  VkPhysicalDevice chosen = VK_NULL_HANDLE;
-  VkPhysicalDeviceProperties chosenProperties{};
-  QueueFamilies chosenFamilies;
-  bool chosenGeometryShader = false;
+  // Every device that clears the hard requirements, gathered so the choice between
+  // them (named preference, then non-integrated) is made once, over the whole set.
+  struct Candidate
+  {
+    VkPhysicalDevice device;
+    VkPhysicalDeviceProperties properties;
+    QueueFamilies families;
+    bool geometryShader;
+  };
+  std::vector<Candidate> candidates;
 
   for (VkPhysicalDevice device : devices)
   {
@@ -370,34 +376,131 @@ bool Context::SelectPhysicalDevice(std::string *error)
       continue;
     }
 
-    const bool geometryShader = features.geometryShader == VK_TRUE;
-
-    // With quad rendering requested, prefer a device that can build the geometry-shader
-    // pipeline.
-    if (chosen != VK_NULL_HANDLE && !(m_quadRenderingRequested && geometryShader && !chosenGeometryShader))
-      continue;
-
-    chosen = device;
-    chosenProperties = properties;
-    chosenFamilies = families;
-    chosenGeometryShader = geometryShader;
-
-    if (!m_quadRenderingRequested || chosenGeometryShader)
-      break;
+    candidates.push_back({device, properties, families, features.geometryShader == VK_TRUE});
   }
 
-  if (chosen == VK_NULL_HANDLE)
+  if (candidates.empty())
   {
     if (!independentBlendRejection.empty())
       return SetError(error, independentBlendRejection);
     return SetError(error, "No compatible Vulkan device was found. Vulkan 1.1, graphics and presentation queues, VK_KHR_swapchain, swapchain transfer-destination images and VkPhysicalDeviceFeatures::independentBlend are required");
   }
 
-  m_physicalDevice = chosen;
-  m_deviceProperties = chosenProperties;
-  m_queueFamilies = chosenFamilies;
-  m_geometryShaderEnabled = chosenGeometryShader && m_quadRenderingRequested;
+  const Candidate *chosen = nullptr;
+
+  // An explicit request wins: match the configured name exactly against what Vulkan
+  // reports, which is what the GUI and config store. A stale or incompatible name
+  // never hard-fails; it just falls through to auto-selection with a warning.
+  if (!m_preferredDeviceName.empty() && m_preferredDeviceName != "Auto")
+  {
+    for (const Candidate &c : candidates)
+    {
+      if (m_preferredDeviceName == c.properties.deviceName)
+      {
+        chosen = &c;
+        break;
+      }
+    }
+    if (chosen == nullptr)
+      ErrorLog("The requested Vulkan device \"%s\" was not found among the compatible GPUs; "
+               "auto-selecting instead.", m_preferredDeviceName.c_str());
+  }
+
+  // Auto: with two GPUs (integrated + discrete) pick the non-integrated one, and
+  // when quad rendering was requested prefer a GPU that can build the geometry-shader
+  // pipeline. Highest score wins; ties keep enumeration order.
+  if (chosen == nullptr)
+  {
+    auto Score = [&](const Candidate &c) {
+      int score = 0;
+      if (m_quadRenderingRequested && c.geometryShader)
+        score += 4;
+      if (c.properties.deviceType != VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU)
+        score += 2;
+      return score;
+    };
+    int bestScore = -1;
+    for (const Candidate &c : candidates)
+    {
+      const int score = Score(c);
+      if (score > bestScore)
+      {
+        bestScore = score;
+        chosen = &c;
+      }
+    }
+  }
+
+  m_physicalDevice = chosen->device;
+  m_deviceProperties = chosen->properties;
+  m_queueFamilies = chosen->families;
+  m_geometryShaderEnabled = chosen->geometryShader && m_quadRenderingRequested;
   return true;
+}
+
+std::vector<std::string> Context::EnumerateDeviceNames()
+{
+  std::vector<std::string> names;
+
+  if (SDL_Vulkan_LoadLibrary(nullptr) != 0)
+    return names;
+
+  VkApplicationInfo appInfo{};
+  appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+  appInfo.pApplicationName = "Supermodel";
+  appInfo.apiVersion = VK_API_VERSION_1_1;
+
+  // Mirror CreateInstance: without portability enumeration the loader hides drivers
+  // implementing only a portable subset (MoltenVK), so add it only when advertised.
+  std::vector<const char *> extensions;
+  VkInstanceCreateFlags createFlags = 0;
+  uint32_t availableCount = 0;
+  vkEnumerateInstanceExtensionProperties(nullptr, &availableCount, nullptr);
+  std::vector<VkExtensionProperties> available(availableCount);
+  if (availableCount != 0)
+    vkEnumerateInstanceExtensionProperties(nullptr, &availableCount, available.data());
+  for (const VkExtensionProperties &properties : available)
+  {
+    if (std::strcmp(properties.extensionName, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) == 0)
+    {
+      extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+      createFlags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+      break;
+    }
+  }
+
+  VkInstanceCreateInfo createInfo{};
+  createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+  createInfo.flags = createFlags;
+  createInfo.pApplicationInfo = &appInfo;
+  createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
+  createInfo.ppEnabledExtensionNames = extensions.empty() ? nullptr : extensions.data();
+
+  VkInstance instance = VK_NULL_HANDLE;
+  if (vkCreateInstance(&createInfo, nullptr, &instance) != VK_SUCCESS)
+  {
+    SDL_Vulkan_UnloadLibrary();
+    return names;
+  }
+
+  uint32_t count = 0;
+  if (vkEnumeratePhysicalDevices(instance, &count, nullptr) == VK_SUCCESS && count > 0)
+  {
+    std::vector<VkPhysicalDevice> devices(count);
+    if (vkEnumeratePhysicalDevices(instance, &count, devices.data()) == VK_SUCCESS)
+    {
+      for (VkPhysicalDevice device : devices)
+      {
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(device, &properties);
+        names.emplace_back(properties.deviceName);
+      }
+    }
+  }
+
+  vkDestroyInstance(instance, nullptr);
+  SDL_Vulkan_UnloadLibrary();
+  return names;
 }
 
 bool Context::CreateDevice(std::string *error)

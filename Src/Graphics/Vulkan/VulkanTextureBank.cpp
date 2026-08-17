@@ -134,6 +134,9 @@ void TextureBank::RecordPendingTransition(VkCommandBuffer commandBuffer)
                            VK_PIPELINE_STAGE_TRANSFER_BIT,
                            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+  // This transition orders every write in the epoch against the shader reads that follow,
+  // so nothing tracked can alias a later copy.
+  m_writtenRects.clear();
 }
 
 bool TextureBank::RecordUpload(VkCommandBuffer commandBuffer, RingBuffer &staging, int level, int x,
@@ -182,16 +185,39 @@ bool TextureBank::RecordUpload(VkCommandBuffer commandBuffer, RingBuffer &stagin
   if (m_image.CurrentLayout() == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
   {
     // An earlier copy this frame already left the image in this layout, so no layout change
-    // is coming to carry a dependency. The game streams overlapping pages within one frame,
-    // and two unordered overlapping copies can resolve in either order.
-    m_image.RecordBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                          VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-                          VK_ACCESS_TRANSFER_WRITE_BIT);
+    // is coming to carry a dependency. The game streams pages within one frame, and two
+    // unordered overlapping copies can resolve in either order. Only genuinely overlapping
+    // rectangles need serializing; disjoint pages and different mip levels do not, so most
+    // copies proceed with no barrier at all (a whole full-image pipeline barrier per copy is
+    // expensive on tiled/mobile GPUs, forcing tile-memory and cache flushes).
+    bool overlaps = false;
+    for (const WrittenRect &r : m_writtenRects)
+    {
+      if (r.level == level && subX < r.x + r.width && r.x < subX + width &&
+          subY < r.y + r.height && r.y < subY + height)
+      {
+        overlaps = true;
+        break;
+      }
+    }
+
+    if (overlaps)
+    {
+      m_image.RecordBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                            VK_ACCESS_TRANSFER_WRITE_BIT);
+      // The barrier orders every prior write, so tracking can restart from this copy.
+      m_writtenRects.clear();
+    }
   }
   else
   {
     m_image.RecordTransition(commandBuffer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    // A fresh write epoch: earlier writes were ordered by the layout transition.
+    m_writtenRects.clear();
   }
+
+  m_writtenRects.push_back({level, subX, subY, width, height});
 
   VkBufferImageCopy copy{};
   copy.bufferOffset = stagingOffset;

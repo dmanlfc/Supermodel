@@ -26,6 +26,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include <vulkan/vulkan.h>
 
@@ -75,10 +76,25 @@ public:
   bool Valid() const { return m_image.Valid() && m_sampler != VK_NULL_HANDLE; }
 
 private:
+  // A copy destination written since the image entered TRANSFER_DST_OPTIMAL, in
+  // mip-local coordinates. Only copies whose rectangles overlap need a WAW barrier
+  // between them; disjoint pages (and different mip levels) do not.
+  struct WrittenRect
+  {
+    int level;
+    int x;
+    int y;
+    int width;
+    int height;
+  };
+
   Image m_image;
   VkSampler m_sampler = VK_NULL_HANDLE;
   const uint16_t *m_textureRam = nullptr;
   int m_numLevels = 0;
+  // Reset whenever the image (re)enters TRANSFER_DST_OPTIMAL or a barrier orders
+  // everything before it; capacity is retained so the draw path never allocates.
+  std::vector<WrittenRect> m_writtenRects;
 };
 
 } // namespace Vulkan

@@ -65,6 +65,8 @@
     "\n"
     "; Graphics backend: OpenGL (default) or Vulkan (Linux builds made with VULKAN=1)\n"
     "GraphicsBackend = \"OpenGL\"\n"
+    "; Vulkan GPU by exact device name, or Auto to prefer a non-integrated GPU\n"
+    "VulkanDevice = \"Auto\"\n"
     "New3DEngine = true\n"
     "QuadRendering = false\n"
     "WideScreen = false\n"
