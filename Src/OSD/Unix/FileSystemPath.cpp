@@ -47,13 +47,39 @@ namespace FileSystemPath
         return 0;
     }
 
+    static std::string WithTrailingSeparator(const std::string &path)
+    {
+        if (path.empty() || path.back() == '/')
+        {
+            return path;
+        }
+
+        return Util::Format() << path << "/";
+    }
+
     // Generates a path to be used by Supermodel files
-    std::string GetPath(PathType pathType)
+    std::string GetPath(PathType pathType, bool createDirectories)
     {
         std::string finalPath;
         std::string homePath;
         std::string strPathType;
         struct passwd* pwd = getpwuid(getuid());
+
+        const std::string overridePath = FileSystemPath::GetOverride(pathType);
+        if (!overridePath.empty())
+        {
+            if (createDirectories)
+            {
+                FileSystemPath::MakeDirs(overridePath);
+            }
+            return WithTrailingSeparator(overridePath);
+        }
+
+        // ROMs are supplied by the user rather than written by Supermodel, so this one is never created
+        if (pathType == ROMs)
+        {
+            return "ROMs/";
+        }
 
         // Resolve pathType to string for later use
         switch (pathType)
@@ -79,6 +105,9 @@ namespace FileSystemPath
         case Assets:
             strPathType = "Assets";
             break;
+        case ROMs:
+            strPathType = "ROMs";
+            break;
         }
 
         // Get user's HOME directory
@@ -99,7 +128,10 @@ namespace FileSystemPath
             if (pathType != Screenshots && pathType != Log)
             {
                 finalPath = strPathType;
-                FileSystemPath::MakeDir(finalPath);
+                if (createDirectories)
+                {
+                    FileSystemPath::MakeDir(finalPath);
+                }
             }
         }
         // Check if $HOME/.supermodel exists
@@ -107,7 +139,10 @@ namespace FileSystemPath
         {
             // Use $HOME/.supermodel
             finalPath = Util::Format() << homePath << "/.supermodel/" << strPathType;
-            FileSystemPath::MakeDir(finalPath);
+            if (createDirectories)
+            {
+                FileSystemPath::MakeDir(finalPath);
+            }
         }
         // On Linux one may want to follow the XDG base directory specs (https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html)
         else
@@ -125,10 +160,16 @@ namespace FileSystemPath
 		        finalPath = Util::Format() << configPath << "/supermodel";
 	            }
                 }
-		FileSystemPath::MakeDir(finalPath);
+		if (createDirectories)
+		{
+		    FileSystemPath::MakeDir(finalPath);
+		}
 
 		finalPath = Util::Format() << finalPath << "/Config";
-		FileSystemPath::MakeDir(finalPath);
+		if (createDirectories)
+		{
+		    FileSystemPath::MakeDir(finalPath);
+		}
             }
             else
             {
@@ -142,10 +183,16 @@ namespace FileSystemPath
 		        finalPath = Util::Format() << dataPath << "/supermodel";
 	            }
                 }
-		FileSystemPath::MakeDir(finalPath);
+		if (createDirectories)
+		{
+		    FileSystemPath::MakeDir(finalPath);
+		}
 
 		finalPath = Util::Format() << finalPath << "/" << strPathType;
-		FileSystemPath::MakeDir(finalPath);
+		if (createDirectories)
+		{
+		    FileSystemPath::MakeDir(finalPath);
+		}
             }
         }
 

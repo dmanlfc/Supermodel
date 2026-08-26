@@ -18,6 +18,7 @@
 #ifdef SUPERMODEL_VULKAN
 #include "Graphics/Vulkan/VulkanContext.h"
 #endif
+#include "../Src/OSD/FileSystemPath.h"
 #include "../Src/OSD/SDL/SDLInputSystem.h"
 #include "../Src/Inputs/Inputs.h"
 #include "Main.h"
@@ -161,6 +162,52 @@ static void UpdateTempValues(Util::Config::Node& config, const std::string group
     }
 }
 
+// Resolving walks the file system, so it is only redone when a setting changes
+static const std::vector<std::pair<std::string, std::string>>& ResolvedPaths(Util::Config::Node& config)
+{
+    static std::string lastSettings;
+    static std::vector<std::pair<std::string, std::string>> resolved;
+
+    std::string settings;
+    for (FileSystemPath::PathType pathType : FileSystemPath::ConfigurablePathTypes()) {
+        settings += config[FileSystemPath::ConfigKey(pathType)].ValueAsDefault<std::string>(std::string());
+        settings += '\n';
+    }
+
+    if (settings != lastSettings) {
+
+        lastSettings = settings;
+
+        // Apply as we go, so a game launched from this window uses what is shown here
+        FileSystemPath::ApplyConfigOverrides(config);
+
+        resolved.clear();
+
+        for (FileSystemPath::PathType pathType : FileSystemPath::ConfigurablePathTypes()) {
+
+            // Nothing is created: a half-typed path should not leave a directory behind
+            std::string path = FileSystemPath::GetPath(pathType, false);
+
+            resolved.emplace_back(FileSystemPath::ConfigKey(pathType), path.empty() ? "(working directory)" : path);
+        }
+    }
+
+    return resolved;
+}
+
+// Shown as a placeholder rather than filled in, so an untouched box keeps
+// following the default instead of freezing today's default into the .ini
+static const char* PathSettingHint(Util::Config::Node& config, const std::string& key)
+{
+    for (const auto& r : ResolvedPaths(config)) {
+        if (r.first == key) {
+            return r.second.c_str();
+        }
+    }
+
+    return "";
+}
+
 static void CreateControls(Util::Config::Node& config, const std::string group)
 {
     for (auto it = config.begin(); it != config.end(); ++it)
@@ -279,7 +326,6 @@ static void CreateControls(Util::Config::Node& config, const std::string group)
                         }
                         case 4:             // std::string
                         {
-                            auto p = std::get_if<std::string>(&vRange->tempValue)->c_str();
                             auto& option = std::get<std::string>(vRange->tempValue);
 
                             auto& list = vRange->GetList();
@@ -303,10 +349,25 @@ static void CreateControls(Util::Config::Node& config, const std::string group)
                                 vRange->tempValue = list[selectedIndex];
                             }
                             else {
-                                char buffer[256];
-                                std::strcpy(buffer, p);
-                                ImGui::InputText(key.c_str(), buffer, IM_ARRAYSIZE(buffer));
-                                option = buffer;     // update temp buffer
+                                // Edit the std::string in place and let ImGui grow it, rather
+                                // than guess at a fixed buffer a long path could overflow
+                                auto ResizeCallback = [](ImGuiInputTextCallbackData* data) -> int
+                                {
+                                    if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
+                                        auto* str = static_cast<std::string*>(data->UserData);
+                                        str->resize(data->BufTextLen);
+                                        data->Buf = str->data();
+                                    }
+                                    return 0;
+                                };
+
+                                if (option.capacity() < 256) {
+                                    option.reserve(256);
+                                }
+
+                                const char* hint = (group == "Paths") ? PathSettingHint(config, key) : "";
+
+                                ImGui::InputTextWithHint(key.c_str(), hint, option.data(), option.capacity() + 1, ImGuiInputTextFlags_CallbackResize, ResizeCallback, &option);
                             }
 
                             break;
@@ -739,6 +800,16 @@ static void GUI(const ImGuiIO& io, Util::Config::Node& config, const std::map<st
             ImGui::EndTabItem();
             inputs = nullptr;
         }
+        if (!FileSystemPath::ConfigurablePathTypes().empty() && ImGui::BeginTabItem("Paths")) {
+            UpdateTempValues(config, "Paths", true);
+            CreateControls(config, "Paths");
+            UpdateTempValues(config, "Paths", false);
+            ImGui::Dummy(ImVec2(0.0f, 10.0f));
+            ImGui::TextDisabled("A greyed out box is the default that setting falls back to. The command");
+            ImGui::TextDisabled("line and the SUPERMODEL_*_PATH environment variables override both.");
+            ImGui::EndTabItem();
+            inputs = nullptr;
+        }
         if (ImGui::BeginTabItem("Misc")) {
             UpdateTempValues(config, "Misc", true);
             CreateControls(config, "Misc");
@@ -813,7 +884,7 @@ static std::string GetRomPath(int selectedGame, const std::map<std::string, Game
         int index = 0;
         for (auto& g : games) {
             if (selectedGame == index) {
-                return (std::filesystem::path("ROMs") / (g.second.name + ".zip")).string();        // todo config rom directory? File dialog will be a bit more tricky cross platform but we can specifiy edit box for manual path entry        
+                return (std::filesystem::path(FileSystemPath::GetPath(FileSystemPath::ROMs)) / (g.second.name + ".zip")).string();
             }
             index++;
         }

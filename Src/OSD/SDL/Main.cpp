@@ -124,11 +124,27 @@
  Global Run-time Config
 ******************************************************************************/
 
-static const std::string s_analysisPath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Analysis);
-static const std::string s_configFilePath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Config) << "Supermodel.ini";
-static const std::string s_gameXMLFilePath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Config) << "Games.xml";
-static const std::string s_musicXMLFilePath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Config) << "Music.xml";
-static const std::string s_logFilePath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Log) << "Supermodel.log";
+// Resolved on each call rather than cached: the directories these live in are
+// user-configurable and are not settled until well after static initialisation
+static std::string ConfigFilePath()
+{
+  return Util::Format() << FileSystemPath::GetPath(FileSystemPath::Config) << "Supermodel.ini";
+}
+
+static std::string GameXMLFilePath()
+{
+  return Util::Format() << FileSystemPath::GetPath(FileSystemPath::Config) << "Games.xml";
+}
+
+static std::string MusicXMLFilePath()
+{
+  return Util::Format() << FileSystemPath::GetPath(FileSystemPath::Config) << "Music.xml";
+}
+
+static std::string LogFilePath()
+{
+  return Util::Format() << FileSystemPath::GetPath(FileSystemPath::Log) << "Supermodel.log";
+}
 
 static Util::Config::Node s_runtime_config("Global");
 
@@ -1552,7 +1568,7 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
   *rom_set = ROMSet();  // free up this memory we won't need anymore
 
   // Customized music for games with MPEG boards
-  MpegDec::LoadCustomTracks(s_musicXMLFilePath, game);
+  MpegDec::LoadCustomTracks(MusicXMLFilePath(), game);
 
   // Load NVRAM
   LoadNVRAM(Model3);
@@ -2098,8 +2114,10 @@ QuitError:
 // .zip archives without accidentally overwriting the configuration.
 static void WriteDefaultConfigurationFileIfNotPresent()
 {
+    const std::string configFilePath = ConfigFilePath();
+
     // Test whether file exists by opening it
-    FILE* fp = fopen(s_configFilePath.c_str(), "r");
+    FILE* fp = fopen(configFilePath.c_str(), "r");
     if (fp)
     {
         fclose(fp);
@@ -2107,15 +2125,51 @@ static void WriteDefaultConfigurationFileIfNotPresent()
     }
 
     // Write config
-    fp = fopen(s_configFilePath.c_str(), "w");
+    fp = fopen(configFilePath.c_str(), "w");
     if (!fp)
     {
-        ErrorLog("Unable to write default configuration file to %s", s_configFilePath.c_str());
+        ErrorLog("Unable to write default configuration file to %s", configFilePath.c_str());
         return;
     }
     fputs(s_defaultConfigFileContents, fp);
     fclose(fp);
-    InfoLog("Wrote default configuration file to %s", s_configFilePath.c_str());
+    InfoLog("Wrote default configuration file to %s", configFilePath.c_str());
+}
+
+static void ApplyConfigurationFilePathOverrides()
+{
+    if (FileSystemPath::ConfigurablePathTypes().empty())
+    {
+        return;
+    }
+
+    Util::Config::Node fileConfig("Global");
+    Util::Config::FromINIFile(&fileConfig, ConfigFilePath());
+    FileSystemPath::ApplyConfigOverrides(fileConfig);
+}
+
+static void LogFileSystemPaths()
+{
+    for (FileSystemPath::PathType pathType : FileSystemPath::OverridablePathTypes())
+    {
+        // A configured directory is created now, so a bad setting is reported at
+        // startup rather than when a save state is written. Defaults are only reported.
+        const std::string configured = FileSystemPath::GetOverride(pathType);
+        std::string path = FileSystemPath::GetPath(pathType, !configured.empty());
+
+        if (path.empty())
+        {
+            path = "./";
+        }
+
+        InfoLog("%s: %s%s", FileSystemPath::ConfigKey(pathType), path.c_str(), configured.empty() ? "" : " (configured)");
+
+        if (!configured.empty() && !FileSystemPath::PathExists(configured))
+        {
+            ErrorLog("Unable to create '%s' for %s. Falling back is not possible; check the setting and its permissions.",
+                     configured.c_str(), FileSystemPath::Description(pathType));
+        }
+    }
 }
 
 // Create and configure inputs
@@ -2153,7 +2207,7 @@ static Result ConfigureInputs(CInputs *Inputs, Util::Config::Node *fileConfig, U
     {
       // Write input configuration and input system settings to config file
       Inputs->StoreToConfig(fileConfigRoot);
-      Util::Config::WriteINIFile(s_configFilePath, *fileConfig, configFileComment);
+      Util::Config::WriteINIFile(ConfigFilePath(), *fileConfig, configFileComment);
 
       // Also save to runtime configuration in case we proceed and play
       Inputs->StoreToConfig(runtimeConfig);
@@ -2208,8 +2262,14 @@ Util::Config::Node DefaultConfig()
 {
   Util::Config::Node config("Global");
   
-  config.Set("GameXMLFile", s_gameXMLFilePath);
+  config.Set("GameXMLFile", GameXMLFilePath());
   config.Set("InitStateFile", "");
+
+  // An empty value means "use the default location"
+  for (FileSystemPath::PathType pathType : FileSystemPath::ConfigurablePathTypes())
+  {
+    config.Set<std::string>(FileSystemPath::ConfigKey(pathType), std::string(), "Paths", std::string(), std::string());
+  }
   // CModel3
   config.Set("PowerPCFrequency", 0u, "Core", 0u, 200u);
   config.Set("MultiThreaded", true,"Core");
@@ -2549,10 +2609,30 @@ static void Help(void)
   puts("General Options:");
   puts("  -?, -h, -help, --help   Print this help text");
   puts("  -print-games            List supported games and quit");
-  printf("  -game-xml-file=<file>   ROM set definition file [Default: %s]\n", s_gameXMLFilePath.c_str());
-  printf("  -log-output=<outputs>   Log output destination(s) [Default: %s]\n", s_logFilePath.c_str());
+  printf("  -game-xml-file=<file>   ROM set definition file [Default: %s]\n", GameXMLFilePath().c_str());
+  printf("  -log-output=<outputs>   Log output destination(s) [Default: %s]\n", LogFilePath().c_str());
   puts("  -log-level=<level>      Logging threshold [Default: info]");
   puts("");
+  if (!FileSystemPath::OverridablePathTypes().empty())
+  {
+    puts("File Location Options:");
+    for (FileSystemPath::PathType pathType : FileSystemPath::OverridablePathTypes())
+    {
+      const std::string option = Util::Format() << FileSystemPath::CommandLineOption(pathType) << "=<dir>";
+      const std::string configured = FileSystemPath::GetOverride(pathType);
+      std::string current;
+      if (!configured.empty())
+      {
+        current = Util::Format() << " [Currently: " << configured << "]";
+      }
+      printf("  %-23s %s%s\n", option.c_str(), FileSystemPath::Description(pathType), current.c_str());
+    }
+    puts("                          Each may also be set with the matching");
+    puts("                          SUPERMODEL_*_PATH environment variable. All except");
+    printf("                          %s are also settable in Supermodel.ini\n", FileSystemPath::CommandLineOption(FileSystemPath::Config));
+    puts("                          and on the Paths tab of the GUI.");
+    puts("");
+  }
   puts("Core Options:");
   puts("  -ppc-frequency=<mhz>    PowerPC frequency (default varies by stepping)");
   puts("  -no-threads             Disable multi-threading entirely");
@@ -2666,8 +2746,8 @@ struct ParsedCommandLine
   ParsedCommandLine()
   {
     // Logging is special: it is only parsed from the command line and
-    // therefore, defaults are needed early
-    config.Set("LogOutput", s_logFilePath.c_str());
+    // therefore, defaults are needed early. LogOutput is filled in by main()
+    // instead, once the log directory it depends on has settled.
     config.Set("LogLevel", "info");
   }
 };
@@ -2759,6 +2839,11 @@ static ParsedCommandLine ParseCommandLine(int argc, char **argv)
         {
           ErrorLog("Argument to '%s' cannot be blank.", option.c_str());
           cmd_line.error = true;
+          continue;
+        }
+        // These redirect where other files are looked for rather than set a value
+        if (FileSystemPath::ApplyCommandLineOption(arg))
+        {
           continue;
         }
         auto it = valued_options.find(option);
@@ -2979,7 +3064,6 @@ static ParsedCommandLine ParseCommandLine(int argc, char **argv)
 int main(int argc, char **argv)
 {
   Title();
-  WriteDefaultConfigurationFileIfNotPresent();
 
   bool loadGUI = false;
   if (argc <= 1)
@@ -2991,11 +3075,27 @@ int main(int argc, char **argv)
   // Before command line is parsed, console logging only
   SetLogger(std::make_shared<CConsoleErrorLogger>());
 
+  // The configuration file is itself one of the things that can be relocated, so
+  // the environment and the command line are resolved before anything reads a path
+  FileSystemPath::ApplyEnvironmentOverrides();
+
   // Load config and parse command line
   auto cmd_line = ParseCommandLine(argc, argv);
   if (cmd_line.error)
   {
     return 1;
+  }
+
+  WriteDefaultConfigurationFileIfNotPresent();
+
+  // Applied before the logger is created, so a configured LogPath takes effect
+  // for this run's log as well
+  ApplyConfigurationFilePathOverrides();
+
+  // Deferred from ParsedCommandLine's constructor until the log directory settled
+  if (!cmd_line.config.TryGet("LogOutput"))
+  {
+    cmd_line.config.Set("LogOutput", LogFilePath());
   }
 
   if (loadGUI) {
@@ -3004,10 +3104,13 @@ int main(int argc, char **argv)
 
       // load up what settings we have so far
       // per game settings are not supported atm but we can look at this later
-      Util::Config::FromINIFile(&fConfig1, s_configFilePath);
+      Util::Config::FromINIFile(&fConfig1, ConfigFilePath());
       Util::Config::MergeINISections(&fConfig2, DefaultConfig(), fConfig1); // apply .ini file's global section over defaults
 
-      cmd_line.rom_files = RunGUI(s_configFilePath, fConfig2);
+      cmd_line.rom_files = RunGUI(ConfigFilePath(), fConfig2);
+
+      // Paths the user just edited apply to the game they are about to launch
+      FileSystemPath::ApplyConfigOverrides(fConfig2);
 
       if (cmd_line.rom_files.empty()) {
           return 0;
@@ -3026,6 +3129,7 @@ int main(int argc, char **argv)
   InfoLog("Started as:");
   for (int i = 0; i < argc; i++)
     InfoLog("  argv[%d] = %s", i, argv[i]);
+  LogFileSystemPaths();
 
   // Finish processing command line
   if (cmd_line.print_help)
@@ -3063,7 +3167,7 @@ int main(int argc, char **argv)
     Util::Config::Node fileConfigWithDefaults("Global");
     Util::Config::Node config3("Global");
     Util::Config::Node config4("Global");
-    Util::Config::FromINIFile(&fileConfig, s_configFilePath);
+    Util::Config::FromINIFile(&fileConfig, ConfigFilePath());
     Util::Config::MergeINISections(&fileConfigWithDefaults, DefaultConfig(), fileConfig); // apply .ini file's global section over defaults
     Util::Config::MergeINISections(&config3, fileConfigWithDefaults, cmd_line.config);    // apply command line overrides
     if (rom_specified || print_games)
@@ -3084,6 +3188,9 @@ int main(int argc, char **argv)
     Util::Config::MergeINISections(&s_runtime_config, config4, cmd_line.config);  // apply command line overrides once more
   }
   LogConfig(s_runtime_config);
+
+  // Per-game sections can move paths too
+  FileSystemPath::ApplyConfigOverrides(s_runtime_config);
 
   // Reject unrecognized backends rather than silently using OpenGL, so a typo
   // cannot be mistaken for a working Vulkan selection.

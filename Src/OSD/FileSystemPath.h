@@ -29,13 +29,49 @@
 #define INCLUDED_FILESYSTEMPATH_H
 
 #include <string>
+#include <vector>
+
+namespace Util
+{
+    namespace Config
+    {
+        class Node;
+    }
+}
 
 namespace FileSystemPath
 {
-    enum PathType { Analysis, Config, Log, NVRAM, Saves, Screenshots, Assets }; // Filesystem path types
+    enum PathType { Analysis, Config, Log, NVRAM, Saves, Screenshots, Assets, ROMs }; // Filesystem path types
+    constexpr size_t NUM_PATH_TYPES = ROMs + 1;
+
     bool PathExists(std::string fileSystemPath); // Checks if a directory exists (returns true if exists, false if it doesn't)
     int MakeDir(std::string dir); // Create a directory
-    std::string GetPath(PathType pathType);  // Generates a path to be used by Supermodel files
+    bool MakeDirs(const std::string &path);
+    std::string GetPath(PathType pathType, bool createDirectories = true);  // Generates a path to be used by Supermodel files
+
+    /*
+     * User-configurable locations, in order of priority: the command line
+     * (-nvram-path=<dir>), the environment (SUPERMODEL_NVRAM_PATH) and
+     * Supermodel.ini (NVRAMPath). Config is the exception: it is where
+     * Supermodel.ini is found, so a setting inside that file cannot relocate
+     * it. Both lists are empty where GetPath() ignores these settings, so an
+     * option that would do nothing never reaches the .ini or the GUI.
+     */
+    const std::vector<PathType> &OverridablePathTypes();
+    const std::vector<PathType> &ConfigurablePathTypes();
+
+    const char *ConfigKey(PathType pathType);
+    const char *CommandLineOption(PathType pathType);
+    const char *EnvironmentVariable(PathType pathType);
+    const char *Description(PathType pathType);
+
+    void SetOverride(PathType pathType, const std::string &path);
+    void SetConfigOverride(PathType pathType, const std::string &path);
+    std::string GetOverride(PathType pathType);
+
+    void ApplyEnvironmentOverrides();
+    bool ApplyCommandLineOption(const std::string &arg); // Consumes "-<name>-path=<dir>", false if the argument is not one
+    void ApplyConfigOverrides(const Util::Config::Node &config);
 }
 
 

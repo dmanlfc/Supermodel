@@ -382,6 +382,7 @@ xcopy /D /Y "$(ProjectDir)..\Assets\*" "$(TargetDir)Assets"</Command>
     <ClCompile Include="..\Src\OSD\SDL\SDLInputSystem.cpp" />
     <ClCompile Include="..\Src\OSD\SDL\Thread.cpp" />
     <ClCompile Include="..\Src\OSD\Windows\DirectInputSystem.cpp" />
+    <ClCompile Include="..\Src\OSD\FileSystemPathConfig.cpp" />
     <ClCompile Include="..\Src\OSD\Windows\FileSystemPath.cpp" />
     <ClCompile Include="..\Src\OSD\Windows\WinOutputs.cpp" />
     <ClCompile Include="..\Src\Pkgs\glew.c">

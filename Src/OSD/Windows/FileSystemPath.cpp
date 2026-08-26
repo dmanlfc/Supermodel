@@ -25,7 +25,7 @@
 namespace FileSystemPath
 {
     // Generates a path to be used by Supermodel files
-    std::string GetPath(PathType pathType)
+    std::string GetPath(PathType pathType, bool /* createDirectories */)
     {
         switch (pathType)
         {
@@ -43,6 +43,8 @@ namespace FileSystemPath
             return "";
         case Assets:
             return "Assets/";
+        case ROMs:
+            return "ROMs/";
         }
 
         return "";
