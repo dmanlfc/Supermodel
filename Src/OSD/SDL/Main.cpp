@@ -89,6 +89,9 @@
 #include "OSD/FileSystemPath.h"
 #include "GameLoader.h"
 #include "SDLInputSystem.h"
+#ifdef SUPERMODEL_EVDEV
+#include "EvdevInputSystem.h"
+#endif
 #include "SDLIncludes.h"
 #include "Debugger/SupermodelDebugger.h"
 #if !defined(SUPERMODEL_OSX) && !defined(SUPERMODEL_GLES)
@@ -1592,8 +1595,7 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
 
   // Hide mouse if fullscreen, enable crosshairs for gun games
   Inputs->GetInputSystem()->SetMouseVisibility(!s_runtime_config["FullScreen"].ValueAs<bool>());
-  gameHasLightguns = !!(game.inputs & (Game::INPUT_GUN1|Game::INPUT_GUN2));
-  gameHasLightguns |= game.name == "lostwsga";
+  gameHasLightguns = !!(game.inputs & (Game::INPUT_GUN1|Game::INPUT_GUN2|Game::INPUT_ANALOG_GUN1|Game::INPUT_ANALOG_GUN2));
   currentInputs = game.inputs;
   if (gameHasLightguns)
     videoInputs = Inputs;
@@ -2349,7 +2351,11 @@ Util::Config::Node DefaultConfig()
   config.Set("SDLVibrateMax", 100, "ForceFeedback", 0, 100);
   config.Set("SDLConstForceThreshold", 30, "ForceFeedback", 0, 100);
 #else
+#ifdef SUPERMODEL_EVDEV
+  config.Set<std::string>("InputSystem", "sdl", "Core", "", "", { "sdl","sdlgamepad","evdev" });
+#else
   config.Set<std::string>("InputSystem", "sdl", "Core", "", "", { "sdl","sdlgamepad" });
+#endif
   // SDL ForceFeedback
   config.Set("SDLConstForceMax", 100, "ForceFeedback", 0, 100);
   config.Set("SDLSelfCenterMax", 100, "ForceFeedback", 0, 100);
@@ -2704,8 +2710,11 @@ static void Help(void)
   puts("Input Options:");
   puts("  -force-feedback         Enable force feedback (DirectInput, XInput)");
   puts("  -config-inputs          Configure keyboards, mice, and game controllers");
-#ifdef SUPERMODEL_WIN32
+#if defined(SUPERMODEL_WIN32)
   printf("  -input-system=<s>       Input system [Default: %s]\n", defaultConfig["InputSystem"].ValueAs<std::string>().c_str());
+#elif defined(SUPERMODEL_EVDEV)
+  printf("  -input-system=<s>       Input system: sdl, sdlgamepad, evdev [Default: %s]\n", defaultConfig["InputSystem"].ValueAs<std::string>().c_str());
+  puts("                          evdev reads light guns directly, one mouse per gun");
 #endif
   puts("  -print-inputs           Prints current input configuration");
   puts("");
@@ -3320,6 +3329,10 @@ int main(int argc, char **argv)
     InputSystem = std::shared_ptr<CInputSystem>(new CSDLInputSystem(s_runtime_config, false));
   else if (selectedInputSystem == "sdlgamepad")
     InputSystem = std::shared_ptr<CInputSystem>(new CSDLInputSystem(s_runtime_config, true));
+#ifdef SUPERMODEL_EVDEV
+  else if (selectedInputSystem == "evdev")
+    InputSystem = std::shared_ptr<CInputSystem>(new CEvdevInputSystem(s_runtime_config, false));
+#endif // SUPERMODEL_EVDEV
 #ifdef SUPERMODEL_WIN32
   else if (selectedInputSystem == "dinput")
     InputSystem = std::shared_ptr<CInputSystem>(new CDirectInputSystem(s_runtime_config, s_window, false, false));

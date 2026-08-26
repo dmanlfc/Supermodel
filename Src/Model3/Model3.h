@@ -233,6 +233,18 @@ private:
   Game m_game;
   int m_stepping;
 
+  // True for The Lost World and its clones. Resolved once when the game is
+  // loaded because ReadInputs() is on a hot path and cannot afford a string
+  // comparison per access.
+  bool m_isLostWorld = false;
+
+  /*
+   * True when the given analog gun is being fired while aimed at the very edge
+   * of the display. The Lost World reloads when the gun is fired off screen,
+   * which a light gun cannot report directly.
+   */
+  bool GunFiredOffscreen(unsigned gunNum) const;
+
   // Game inputs and outputs
   CInputs   *Inputs;
   COutputs  *Outputs;

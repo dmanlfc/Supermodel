@@ -502,8 +502,8 @@ Input Systems
 
 Supermodel supports multiple input APIs to provide the best possible
 compatibility for different input devices and configuration schemes.  On
-Windows, the default is DirectInput.  On all other platforms, SDL is the only
-option available.
+Windows, the default is DirectInput.  On all other platforms, the default is
+SDL; Linux builds compiled with libudev also offer evdev for light guns.
 
 Windows users can select between four different input systems:
 
@@ -518,6 +518,21 @@ Windows users can select between four different input systems:
     - SDL.  Selected with '-input-system=sdl'.  The standard, cross-platform
       input system intended for non-Windows builds.  It is accessible on
       Windows but does not provide full support for all devices.
+
+Linux users can additionally select the evdev input system:
+
+    - evdev.  Selected with '-input-system=evdev'.  SDL merges every pointing
+      device into a single system mouse and therefore cannot tell two light
+      guns apart.  This system reads absolute-positioning guns straight from
+      their /dev/input/event nodes instead, so each gun gets its own mouse
+      number: MOUSE1_XAXIS and MOUSE1_YAXIS for the first gun, MOUSE2_XAXIS
+      and MOUSE2_YAXIS for the second.  Keyboards, game controllers and force
+      feedback continue to be handled by SDL, and if no gun is attached the
+      SDL system mouse is used as usual.  Guns are found through udev's
+      ID_INPUT_GUN property and ordered by event node, so gun numbering does
+      not change between runs.  Supermodel needs read access to the event
+      nodes, which on most distributions means being a member of the 'input'
+      group.
 
 When switching input systems with '-input-system', you must also configure your
 inputs using the same option.  For example, when running Supermodel with XInput

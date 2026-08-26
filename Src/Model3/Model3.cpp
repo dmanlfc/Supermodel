@@ -242,6 +242,18 @@
  Game controls. The EEPROM is mapped here as well.
 ******************************************************************************/
 
+bool CModel3::GunFiredOffscreen(unsigned gunNum) const
+{
+  if (!Inputs->analogTriggerLeft[gunNum]->value)
+    return false;
+  // A light gun clamps to the edge of the screen instead of reporting a
+  // position beyond it, so the outermost couple of ADC steps stand in for
+  // "off screen". Mouse and joystick aiming hit the same limits.
+  const UINT8 x = (UINT8)Inputs->analogGunX[gunNum]->value;
+  const UINT8 y = (UINT8)Inputs->analogGunY[gunNum]->value;
+  return x <= 2 || x >= 253 || y <= 2 || y >= 253;
+}
+
 UINT8 CModel3::ReadInputs(unsigned reg)
 {
   UINT8 adc[8];
@@ -450,6 +462,11 @@ UINT8 CModel3::ReadInputs(unsigned reg)
     {
       data &= ~(Inputs->analogTriggerLeft[0]->value<<0);
       data &= ~(Inputs->analogTriggerRight[0]->value<<1);
+      // The Lost World reloads when the gun is fired off screen, exactly as the
+      // real cabinet does, so aiming past the edge and pulling the trigger
+      // asserts the reload line as well.
+      if (m_isLostWorld && GunFiredOffscreen(0))
+        data &= ~(1<<1);
     }
 
     if ((m_game.inputs & Game::INPUT_MAGTRUCK))
@@ -547,6 +564,8 @@ UINT8 CModel3::ReadInputs(unsigned reg)
     {
       data &= ~(Inputs->analogTriggerLeft[1]->value<<0);
       data &= ~(Inputs->analogTriggerRight[1]->value<<1);
+      if (m_isLostWorld && GunFiredOffscreen(1))
+        data &= ~(1<<1);
     }
 
     if ((m_game.inputs & Game::INPUT_MAGTRUCK))
@@ -607,8 +626,8 @@ UINT8 CModel3::ReadInputs(unsigned reg)
   	  // probably to allow users to define inverted controls for this game only,
   	  // which means the input system must support loading per-game config (not
   	  // all analog_gun games require axis inversion to be playable).
-	  if (m_game.name == "lostwsga" || m_game.name == "lostwsgo")
-	  { // to do, not a string compare
+	  if (m_isLostWorld)
+	  {
         adc[0] =       (UINT8)Inputs->analogGunX[0]->value; // order is different for some reason in lost world
         adc[1] = 255 - (UINT8)Inputs->analogGunY[0]->value; // why are values inverted? is this the wrong place to fix this
         adc[2] =       (UINT8)Inputs->analogGunX[1]->value;
@@ -2875,6 +2894,7 @@ const Game &CModel3::GetGame() const
 Result CModel3::LoadGame(const Game &game, const ROMSet &rom_set)
 {
   m_game = Game();
+  m_isLostWorld = false;
 
   /*
    * Copy in ROM data with mirroring as necessary for the following cases:
@@ -3058,6 +3078,7 @@ Result CModel3::LoadGame(const Game &game, const ROMSet &rom_set)
   std::cout << std::endl;
 
   m_game = game;
+  m_isLostWorld = m_game.name == "lostwsga" || m_game.parent == "lostwsga";
   NetBoard->GetGame(m_game);
   if (Result::OKAY != NetBoard->Init(netRAM, netBuffer))
   {

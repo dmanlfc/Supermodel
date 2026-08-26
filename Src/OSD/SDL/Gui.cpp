@@ -20,6 +20,9 @@
 #endif
 #include "../Src/OSD/FileSystemPath.h"
 #include "../Src/OSD/SDL/SDLInputSystem.h"
+#ifdef SUPERMODEL_EVDEV
+#include "../Src/OSD/evdev/EvdevInputSystem.h"
+#endif
 #include "../Src/Inputs/Inputs.h"
 #include "Main.h"
 
@@ -664,6 +667,10 @@ static std::shared_ptr<CInputs> GetInputSystem(Util::Config::Node& config, SDL_W
 
     if (selectedInputSystem == "sdl")               { inputSystem = std::shared_ptr<CInputSystem>(new CSDLInputSystem(config, false));}
     else if (selectedInputSystem == "sdlgamepad")   { inputSystem = std::shared_ptr<CInputSystem>(new CSDLInputSystem(config, true)); }
+
+#ifdef SUPERMODEL_EVDEV
+    else if (selectedInputSystem == "evdev")        { inputSystem = std::shared_ptr<CInputSystem>(new CEvdevInputSystem(config, false)); }
+#endif // SUPERMODEL_EVDEV
 
 #ifdef SUPERMODEL_WIN32
     else if (selectedInputSystem == "dinput")       { inputSystem = std::shared_ptr<CInputSystem>(new CDirectInputSystem(config, window, false, false));}

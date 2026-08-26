@@ -87,6 +87,30 @@ else ifneq ($(filter $(strip $(WAYLAND)),0 1),$(strip $(WAYLAND)))
 endif
 
 #
+# Optional Linux evdev light gun support. SDL only ever exposes one merged
+# system pointer, so two guns cannot be told apart through it; EVDEV=1 reads the
+# guns straight from /dev/input/eventN instead and is selected at run time with
+# InputSystem = evdev.
+#
+# Left empty this is autodetected: enabled when libudev is present, quietly
+# skipped when it is not. EVDEV=1 turns a missing libudev into a build error
+# rather than a silent downgrade, EVDEV=0 leaves it out entirely.
+#
+EVDEV =
+ifneq ($(filter $(strip $(EVDEV)),0 1),$(strip $(EVDEV)))
+	override EVDEV =
+endif
+SUPERMODEL_EVDEV_BUILD =
+ifneq ($(strip $(EVDEV)),0)
+	EVDEV_DETECTED := $(shell pkg-config --exists libudev 2>/dev/null && echo 1)
+	ifeq ($(strip $(EVDEV_DETECTED)),1)
+		SUPERMODEL_EVDEV_BUILD = 1
+	else ifeq ($(strip $(EVDEV)),1)
+$(error EVDEV=1 requires libudev. Install libudev-dev (Debian/Ubuntu), systemd-devel (Fedora) or systemd-libs (Arch), or build with EVDEV=0)
+	endif
+endif
+
+#
 # Toolchain
 #
 CC = gcc
@@ -113,6 +137,10 @@ ifeq ($(strip $(VULKAN)),1)
 	PLATFORM_CXXFLAGS += -DSUPERMODEL_VULKAN
 	PLATFORM_LDFLAGS_EXTRA = -lvulkan
 endif
+ifeq ($(strip $(SUPERMODEL_EVDEV_BUILD)),1)
+	PLATFORM_CXXFLAGS += -DSUPERMODEL_EVDEV $(shell pkg-config --cflags libudev)
+	PLATFORM_LDFLAGS_EXTRA += $(shell pkg-config --libs libudev)
+endif
 ifeq ($(strip $(GLES)),1)
 	SUPERMODEL_GLES_BUILD = 1
 	PLATFORM_CXXFLAGS += -DSUPERMODEL_GLES -DIMGUI_IMPL_OPENGL_ES3
@@ -130,6 +158,16 @@ PLATFORM_TRACK_BUILD_CONFIG = 1
 
 PLATFORM_SRC_FILES = \
 	Src/OSD/Unix/FileSystemPath.cpp
+
+#
+# The evdev input system. Guarded by #ifdef SUPERMODEL_EVDEV as well, so it also
+# compiles to nothing if it ever ends up in a build without libudev. Listing it
+# here is what puts Src/OSD/evdev on the include path.
+#
+ifeq ($(strip $(SUPERMODEL_EVDEV_BUILD)),1)
+	PLATFORM_SRC_FILES += \
+		Src/OSD/evdev/EvdevInputSystem.cpp
+endif
 
 #
 # The complete Vulkan backend. Every one of these translation units is guarded by
