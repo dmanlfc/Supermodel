@@ -58,3 +58,43 @@ ENABLE_DEBUGGER =
 ifneq ($(filter $(strip $(ENABLE_DEBUGGER)),0 1),$(strip $(ENABLE_DEBUGGER)))
 	override ENABLE_DEBUGGER =
 endif
+
+#
+# Additional flags appended to the ones Supermodel constructs for itself.
+#
+# Rules.inc builds CFLAGS, CXXFLAGS and LDFLAGS from scratch, because they carry
+# things the build cannot work without (-c, the generated include path, the
+# output file). That means a CFLAGS or LDFLAGS exported by a distribution or by
+# a cross build system would otherwise be silently thrown away -- and in Yocto's
+# case, dropping LDFLAGS is a packaging QA failure.
+#
+# So anything the environment or command line supplied under those names is
+# captured here and appended to the constructed flags instead of replacing them.
+# EXTRA_CFLAGS / EXTRA_CXXFLAGS / EXTRA_LDFLAGS may also be set directly.
+#
+ifeq ($(filter undefined default,$(origin CFLAGS)),)
+	EXTRA_CFLAGS := $(CFLAGS) $(EXTRA_CFLAGS)
+endif
+ifeq ($(filter undefined default,$(origin CXXFLAGS)),)
+	EXTRA_CXXFLAGS := $(CXXFLAGS) $(EXTRA_CXXFLAGS)
+endif
+ifeq ($(filter undefined default,$(origin LDFLAGS)),)
+	EXTRA_LDFLAGS := $(LDFLAGS) $(EXTRA_LDFLAGS)
+endif
+
+#
+# Strip the linked binary. Packagers normally want this off, because the build
+# system splits the debug information into its own package afterwards and cannot
+# do that once the symbols are gone.
+#
+STRIP_BINARY = 1
+ifneq ($(filter $(strip $(STRIP_BINARY)),0 1),$(strip $(STRIP_BINARY)))
+	override STRIP_BINARY = 1
+endif
+
+#
+# Version stamp. Normally derived from the git history. Packagers building from
+# a release tarball have no .git directory and should pass their own, e.g.
+# VERSION=0.3a-20260826, which is then compiled into the binary.
+#
+VERSION ?=

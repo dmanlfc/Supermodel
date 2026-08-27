@@ -60,6 +60,13 @@ endif
 # DEBUG will build a debug build but does *not* enable extra debug logging and
 # therefore does not modify SUPERMODEL_BUILD_FLAGS
 
+# A version supplied by a packager (VERSION=... on the make command line) is
+# compiled in for every target, not just the release ones, because a build from
+# a tarball has no git history for set_version to read.
+ifneq ($(strip $(VERSION)),)
+	SUPERMODEL_BUILD_FLAGS += -DSUPERMODEL_VERSION=\"$(strip $(VERSION))\"
+endif
+
 #
 # Compiler options
 #
@@ -71,7 +78,14 @@ endif
 WARN = -Wall
 CSTD = -std=iso9899:2011
 CXXSTD = -std=c++17
-LDOPT = -s
+
+# -s strips the binary at link time. Packagers turn this off with
+# STRIP_BINARY=0 so that their build system can split the debug information out
+# into its own package.
+LDOPT =
+ifeq ($(strip $(STRIP_BINARY)),1)
+	LDOPT = -s
+endif
 ifeq ($(strip $(DEBUG)),1)
 	LDOPT =
 endif
@@ -84,9 +98,17 @@ ifeq ($(strip $(SUPERMODEL_GLES_BUILD)),1)
 	GLEW_CFLAGS =
 endif
 COMMON_CFLAGS = -c $(ARCH) $(OPT) $(WARN) $(addprefix -I,$(sort $(INCLUDE_DIRS))) $(GLEW_CFLAGS) $(SUPERMODEL_BUILD_FLAGS)
-CFLAGS = $(COMMON_CFLAGS) $(CSTD)
-CXXFLAGS = $(PLATFORM_CXXFLAGS) $(COMMON_CFLAGS) $(CXXSTD)
-LDFLAGS = -o $(BIN_DIR)/$(SUPERMODEL_BINARY) $(PLATFORM_LDFLAGS) $(LDOPT)
+
+#
+# These are constructed rather than merely defaulted, so they are marked
+# override: a CFLAGS or LDFLAGS arriving on the make command line would
+# otherwise replace them wholesale and take -c, the include path and the output
+# file with it. Options.inc has already folded any such value into the
+# corresponding EXTRA_ variable, which is appended here instead.
+#
+override CFLAGS = $(COMMON_CFLAGS) $(CSTD) $(EXTRA_CFLAGS)
+override CXXFLAGS = $(PLATFORM_CXXFLAGS) $(COMMON_CFLAGS) $(CXXSTD) $(EXTRA_CXXFLAGS)
+override LDFLAGS = -o $(BIN_DIR)/$(SUPERMODEL_BINARY) $(EXTRA_LDFLAGS) $(PLATFORM_LDFLAGS) $(LDOPT)
 CFLAGS_GENERATE_DEPENDENCIES = $(filter-out -c,$(CFLAGS))	# remove -c because clang will warn
 CXXFLAGS_GENERATE_DEPENDENCIES = $(filter-out -c,$(CXXFLAGS))
 
@@ -296,11 +318,17 @@ pkg/path: set_version
 	@echo $(PKG_PATH)
 
 #
-# Sets a VERSION variable based on the git sha.
+# Sets a VERSION variable based on the git sha, unless the build already carries
+# a version supplied by a packager (VERSION= on the make command line), which is
+# the only thing available when building from a release tarball.
 #
+GIT_VERSION = $(strip $(subst ',,0.3a-$(shell git show -s --format=%cd --date=format:%Y%m%d HEAD 2>/dev/null)-git-$(shell git rev-parse --short HEAD 2>/dev/null)))
+
 set_version:
-	$(eval VERSION = $(strip $(subst ',,0.3a-$(shell git show -s --format=%cd --date=format:%Y%m%d HEAD)-git-$(shell git rev-parse --short HEAD))))
+ifeq ($(strip $(VERSION)),)
+	$(eval VERSION = $(GIT_VERSION))
 	$(eval SUPERMODEL_BUILD_FLAGS += -DSUPERMODEL_VERSION=\"$(VERSION)\")
+endif
 
 #
 # Prints a message containing the version number to stdout for informational
@@ -318,7 +346,7 @@ version: set_version
 #
 # Supermodel binary
 #
-$(BIN_DIR)/$(SUPERMODEL_BINARY):	$(BIN_DIR) $(OBJ_FILES)
+$(BIN_DIR)/$(SUPERMODEL_BINARY):	$(OBJ_FILES) | $(BIN_DIR)
 	$(info --------------------------------------------------------------------------------)
 	$(info Linking Supermodel     : $(BIN_DIR)/$(SUPERMODEL_BINARY))
 	$(SILENT)$(LD) $(OBJ_FILES) $(LDFLAGS)
@@ -329,7 +357,7 @@ $(BIN_DIR)/$(SUPERMODEL_BINARY):	$(BIN_DIR) $(OBJ_FILES)
 # $(PLATFORM_DIRS) is required on macOS, whose $(PLATFORM_LDFLAGS) pulls in 
 # Frameworks that must be downloaded.
 #
-$(BIN_DIR)/$(DISASSEMBLER_BINARY):  $(BIN_DIR) Src/CPU/PowerPC/PPCDisasm.cpp $(PLATFORM_DIRS)
+$(BIN_DIR)/$(DISASSEMBLER_BINARY):  Src/CPU/PowerPC/PPCDisasm.cpp $(PLATFORM_DIRS) | $(BIN_DIR)
 	$(info --------------------------------------------------------------------------------)
 	$(info Building Disassembler  : $(BIN_DIR)/$(DISASSEMBLER_BINARY))
 	$(SILENT)$(LD) -o $(BIN_DIR)/$(DISASSEMBLER_BINARY) Src/CPU/PowerPC/PPCDisasm.cpp -DSTANDALONE $(OPT) $(WARN) $(addprefix -I,$(sort $(INCLUDE_DIRS))) $(CXXSTD) $(PLATFORM_LDFLAGS)
@@ -430,18 +458,34 @@ $(OBJ_DIR)/%.o:	%.c | $(OBJ_DIR)
 
 MUSASHI_OUTFILE = $(OBJ_DIR)/m68kmake.exe # do not remove the .exe suffix!
 MUSASHI_CFLAGS = -ISrc/CPU/68K/Musashi -I$(OBJ_DIR) -DINLINE="static inline" -Wno-unused-variable
-MUSASHI_LDFLAGS = -o $(MUSASHI_OUTFILE) $(OBJ_DIR)/m68kmake.o -s
 
-$(MUSASHI_OUTFILE): Src/CPU/68K/Musashi/m68kmake.c Src/CPU/68K/Musashi/m68k_in.c | $(OBJ_DIR)
+#
+# m68kmake is a code generator, not part of Supermodel: it is executed during
+# the build and writes the 68K interpreter's source files into $(OBJ_DIR).
+#
+# It therefore has to be built for the machine running the build, with
+# $(CC_FOR_BUILD) and none of the target's flags. Built with a cross compiler it
+# comes out as a target binary that the build machine cannot execute, which is
+# the one thing that stopped Supermodel cross compiling out of the box. For a
+# native build $(CC_FOR_BUILD) is just $(CC), so nothing changes.
+#
+$(MUSASHI_OUTFILE): Src/CPU/68K/Musashi/m68kmake.c | $(OBJ_DIR)
 	$(info --------------------------------------------------------------------------------)
-	$(info Compiling              : $< -> $(OBJ_DIR)/m68kmake.o)
-	$(SILENT)$(CC) $< $(CFLAGS) -o $(OBJ_DIR)/m68kmake.o
-	$(info Linking                : $(MUSASHI_OUTFILE))
-	$(SILENT)$(LD) $(MUSASHI_LDFLAGS)
+	$(info Building 68K generator : $< -> $@)
+	$(SILENT)$(CC_FOR_BUILD) $(CFLAGS_FOR_BUILD) -o $@ $< $(LDFLAGS_FOR_BUILD)
 
-$(OBJ_DIR)/m68kops.h $(OBJ_DIR)/m68kops.c $(OBJ_DIR)/m68kopac.c $(OBJ_DIR)/m68kopdm.c $(OBJ_DIR)/m68kopnz.c:	$(MUSASHI_OUTFILE) Src/CPU/68K/Musashi/m68k_in.c Src/CPU/68K/Musashi/m68k.h Src/CPU/68K/Musashi/m68kconf.h | $(OBJ_DIR)
-	$(info Generating 68K emulator: $@)
+MUSASHI_GENERATED_SRC = \
+	$(OBJ_DIR)/m68kops.h \
+	$(OBJ_DIR)/m68kops.c \
+	$(OBJ_DIR)/m68kopac.c \
+	$(OBJ_DIR)/m68kopdm.c \
+	$(OBJ_DIR)/m68kopnz.c
+
+$(OBJ_DIR)/m68kops.h:	$(MUSASHI_OUTFILE) Src/CPU/68K/Musashi/m68k_in.c Src/CPU/68K/Musashi/m68k.h Src/CPU/68K/Musashi/m68kconf.h | $(OBJ_DIR)
+	$(info Generating 68K emulator: $(MUSASHI_GENERATED_SRC))
 	@$(MUSASHI_OUTFILE) $(OBJ_DIR) Src/CPU/68K/Musashi/m68k_in.c
+
+$(OBJ_DIR)/m68kops.c $(OBJ_DIR)/m68kopac.c $(OBJ_DIR)/m68kopdm.c $(OBJ_DIR)/m68kopnz.c:	$(OBJ_DIR)/m68kops.h ;
 
 $(OBJ_DIR)/m68kcpu.o:	Src/CPU/68K/Musashi/m68kcpu.c $(OBJ_DIR)/m68kops.h Src/CPU/68K/Musashi/m68k.h Src/CPU/68K/Musashi/m68kconf.h | $(OBJ_DIR)
 	$(info Compiling              : $< -> $@)
@@ -462,3 +506,67 @@ $(OBJ_DIR)/m68kopdm.o: $(OBJ_DIR)/m68kopdm.c $(OBJ_DIR)/m68kops.h Src/CPU/68K/Mu
 $(OBJ_DIR)/m68kopnz.o: $(OBJ_DIR)/m68kopnz.c $(OBJ_DIR)/m68kops.h Src/CPU/68K/Musashi/m68k.h Src/CPU/68K/Musashi/m68kconf.h $(MUSASHI_OUTFILE) | $(OBJ_DIR)
 	$(info Compiling              : $< -> $@)
 	@$(CC) $< $(CFLAGS) $(MUSASHI_CFLAGS) -o $@
+
+
+
+###############################################################################
+# Installation
+#
+# Enabled by the platform makefile (PLATFORM_INSTALL = 1) rather than defined
+# unconditionally, because it only makes sense where there is a filesystem
+# layout to install into.
+#
+# The variable names and their defaults are the GNU ones, so a packaging recipe
+# that already knows how to install an Autotools project needs no special case
+# for Supermodel:
+#
+#   make install DESTDIR=$(TARGET_DIR) PREFIX=/usr
+#
+# Supermodel resolves its data at run time through ConfigPath and AssetsPath
+# (Supermodel.ini, -config-path/-assets-path, or SUPERMODEL_CONFIG_PATH/
+# SUPERMODEL_ASSETS_PATH), so a frontend points those at CONFIGDIR and ASSETSDIR
+# below. Both can be redirected here if a distribution prefers another layout.
+###############################################################################
+
+ifeq ($(strip $(PLATFORM_INSTALL)),1)
+
+DESTDIR ?=
+PREFIX ?= /usr/local
+EXEC_PREFIX ?= $(PREFIX)
+BINDIR ?= $(EXEC_PREFIX)/bin
+DATAROOTDIR ?= $(PREFIX)/share
+DATADIR ?= $(DATAROOTDIR)/supermodel
+CONFIGDIR ?= $(DATADIR)/Config
+ASSETSDIR ?= $(DATADIR)/Assets
+
+INSTALL ?= install
+INSTALL_PROGRAM ?= $(INSTALL) -m 0755
+INSTALL_DATA ?= $(INSTALL) -m 0644
+
+INSTALL_CONFIG_FILES = $(wildcard Config/*.xml)
+INSTALL_ASSET_FILES = $(wildcard Assets/*.bmp)
+
+.PHONY: install
+.PHONY: uninstall
+
+install: all
+	$(info --------------------------------------------------------------------------------)
+	$(info Installing binary      : $(DESTDIR)$(BINDIR)/$(SUPERMODEL_BINARY))
+	$(SILENT)$(INSTALL) -d $(DESTDIR)$(BINDIR)
+	$(SILENT)$(INSTALL_PROGRAM) $(BIN_DIR)/$(SUPERMODEL_BINARY) $(DESTDIR)$(BINDIR)/$(SUPERMODEL_BINARY)
+	$(info Installing config      : $(DESTDIR)$(CONFIGDIR))
+	$(SILENT)$(INSTALL) -d $(DESTDIR)$(CONFIGDIR)
+	$(SILENT)$(INSTALL_DATA) $(INSTALL_CONFIG_FILES) $(DESTDIR)$(CONFIGDIR)
+	$(info Installing assets      : $(DESTDIR)$(ASSETSDIR))
+	$(SILENT)$(INSTALL) -d $(DESTDIR)$(ASSETSDIR)
+	$(SILENT)$(INSTALL_DATA) $(INSTALL_ASSET_FILES) $(DESTDIR)$(ASSETSDIR)
+	$(info --------------------------------------------------------------------------------)
+
+uninstall:
+	$(info Removing               : $(DESTDIR)$(BINDIR)/$(SUPERMODEL_BINARY))
+	$(SILENT)rm -f $(DESTDIR)$(BINDIR)/$(SUPERMODEL_BINARY)
+	$(SILENT)rm -f $(addprefix $(DESTDIR)$(CONFIGDIR)/,$(notdir $(INSTALL_CONFIG_FILES)))
+	$(SILENT)rm -f $(addprefix $(DESTDIR)$(ASSETSDIR)/,$(notdir $(INSTALL_ASSET_FILES)))
+	$(SILENT)rmdir $(DESTDIR)$(CONFIGDIR) $(DESTDIR)$(ASSETSDIR) $(DESTDIR)$(DATADIR) 2>/dev/null || true
+
+endif

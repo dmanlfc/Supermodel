@@ -52,6 +52,17 @@ PKG_TYPE = tgz
 include Makefiles/Options.inc
 
 #
+# Toolchain. The defaults below are for a native Linux/UNIX build; anything the
+# environment or the make command line supplies wins, which is what lets a cross
+# compiler be selected without editing or patching this file. See
+# Makefiles/Toolchain.inc and Docs/CROSS-COMPILING.md.
+#
+TOOLCHAIN_DEFAULT_CC = gcc
+TOOLCHAIN_DEFAULT_CXX = g++
+TOOLCHAIN_DEFAULT_LD = $(CC)
+include Makefiles/Toolchain.inc
+
+#
 # Optional OpenGL ES 3.2 build. This is intentionally supported only by the
 # UNIX/Linux makefile; macOS uses desktop OpenGL.
 #
@@ -102,7 +113,7 @@ ifneq ($(filter $(strip $(EVDEV)),0 1),$(strip $(EVDEV)))
 endif
 SUPERMODEL_EVDEV_BUILD =
 ifneq ($(strip $(EVDEV)),0)
-	EVDEV_DETECTED := $(shell pkg-config --exists libudev 2>/dev/null && echo 1)
+	EVDEV_DETECTED := $(shell $(PKG_CONFIG) --exists libudev 2>/dev/null && echo 1)
 	ifeq ($(strip $(EVDEV_DETECTED)),1)
 		SUPERMODEL_EVDEV_BUILD = 1
 	else ifeq ($(strip $(EVDEV)),1)
@@ -111,19 +122,48 @@ $(error EVDEV=1 requires libudev. Install libudev-dev (Debian/Ubuntu), systemd-d
 endif
 
 #
-# Toolchain
+# Library discovery
 #
-CC = gcc
-CXX = g++
-LD = gcc
+# Every variable here can be overridden from the environment or the make command
+# line. For a cross build that usually means nothing more than pointing
+# PKG_CONFIG at the sysroot aware wrapper the toolchain already provides -- all
+# the paths below then come out of the sysroot instead of the build machine.
+#
+# pkg-config is preferred over sdl2-config because sdl2-config bakes in the
+# prefix it was configured with and knows nothing about a sysroot: in a cross
+# build it hands back the build machine's -I/usr/include and -L/usr/lib, and the
+# link then fails or, worse, quietly succeeds against the wrong libraries.
+# sdl2-config is kept as a fallback for the rare setup with no sdl2.pc.
+#
+# The `?=' followed by `:=' pattern below leaves an externally supplied value
+# alone and otherwise expands the discovery command exactly once, rather than on
+# every reference.
+#
+SDL2_CONFIG ?= sdl2-config
+SDL2_PKG_FOUND := $(shell $(PKG_CONFIG) --exists sdl2 2>/dev/null && echo 1)
+
+ifeq ($(strip $(SDL2_PKG_FOUND)),1)
+	SDL2_CFLAGS ?= $(shell $(PKG_CONFIG) --cflags sdl2)
+	SDL2_LIBS ?= $(shell $(PKG_CONFIG) --libs sdl2)
+else
+	SDL2_CFLAGS ?= $(shell $(SDL2_CONFIG) --cflags 2>/dev/null)
+	SDL2_LIBS ?= $(shell $(SDL2_CONFIG) --libs 2>/dev/null || echo -lSDL2)
+endif
+SDL2_CFLAGS := $(SDL2_CFLAGS)
+SDL2_LIBS := $(SDL2_LIBS)
+
+SDL2_NET_LIBS ?= $(shell $(PKG_CONFIG) --libs SDL2_net 2>/dev/null || echo -lSDL2_net)
+SDL2_NET_LIBS := $(SDL2_NET_LIBS)
 
 #
-# SDL
+# The remaining system libraries.
 #
-
-SDL2_CFLAGS = `sdl2-config --cflags`
-SDL2_LIBS = `sdl2-config --libs`
-SDL2_LIBS += -lSDL2_net
+GL_LIBS ?= -lGL -lGLU
+GLES_LIBS ?= -lGLESv2
+VULKAN_LIBS ?= -lvulkan
+ZLIB_LIBS ?= $(shell $(PKG_CONFIG) --libs zlib 2>/dev/null || echo -lz)
+ZLIB_LIBS := $(ZLIB_LIBS)
+SYSTEM_LIBS ?= -lm -lstdc++ -lpthread
 
 #
 #	UNIX-specific
@@ -135,21 +175,22 @@ ifeq ($(strip $(WAYLAND)),1)
 endif
 ifeq ($(strip $(VULKAN)),1)
 	PLATFORM_CXXFLAGS += -DSUPERMODEL_VULKAN
-	PLATFORM_LDFLAGS_EXTRA = -lvulkan
+	PLATFORM_LDFLAGS_EXTRA = $(VULKAN_LIBS)
 endif
 ifeq ($(strip $(SUPERMODEL_EVDEV_BUILD)),1)
-	PLATFORM_CXXFLAGS += -DSUPERMODEL_EVDEV $(shell pkg-config --cflags libudev)
-	PLATFORM_LDFLAGS_EXTRA += $(shell pkg-config --libs libudev)
+	PLATFORM_CXXFLAGS += -DSUPERMODEL_EVDEV $(shell $(PKG_CONFIG) --cflags libudev)
+	PLATFORM_LDFLAGS_EXTRA += $(shell $(PKG_CONFIG) --libs libudev)
 endif
 ifeq ($(strip $(GLES)),1)
 	SUPERMODEL_GLES_BUILD = 1
 	PLATFORM_CXXFLAGS += -DSUPERMODEL_GLES -DIMGUI_IMPL_OPENGL_ES3
-	PLATFORM_LDFLAGS = $(SDL2_LIBS) -lGLESv2 -lz -lm -lstdc++ -lpthread $(PLATFORM_LDFLAGS_EXTRA)
+	PLATFORM_LDFLAGS = $(SDL2_LIBS) $(SDL2_NET_LIBS) $(GLES_LIBS) $(ZLIB_LIBS) $(SYSTEM_LIBS) $(PLATFORM_LDFLAGS_EXTRA)
 else
-	PLATFORM_LDFLAGS = $(SDL2_LIBS) -lGL -lGLU -lz -lm -lstdc++ -lpthread $(PLATFORM_LDFLAGS_EXTRA)
+	PLATFORM_LDFLAGS = $(SDL2_LIBS) $(SDL2_NET_LIBS) $(GL_LIBS) $(ZLIB_LIBS) $(SYSTEM_LIBS) $(PLATFORM_LDFLAGS_EXTRA)
 endif
 PLATFORM_BINARY_EXTENSION =
 PLATFORM_TRACK_BUILD_CONFIG = 1
+PLATFORM_INSTALL = 1
 
 
 ###############################################################################

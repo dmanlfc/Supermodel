@@ -54,11 +54,15 @@ PKG_TYPE = zip
 BITS = 64
 
 #
-# Toolchain
+# Toolchain. The defaults below are for a native MinGW build; anything the
+# environment or the make command line supplies wins, which is also what makes
+# a mingw-w64 cross build from Linux work. See Makefiles/Toolchain.inc and
+# Docs/CROSS-COMPILING.md.
 #
-CC = gcc
-CXX = g++
-LD = g++
+TOOLCHAIN_DEFAULT_CC = gcc
+TOOLCHAIN_DEFAULT_CXX = g++
+TOOLCHAIN_DEFAULT_LD = $(CXX)
+include Makefiles/Toolchain.inc
 
 
 ###############################################################################
@@ -92,8 +96,9 @@ ifneq (,$(findstring cmd.exe,$(shell echo %COMSPEC%)))
 	SDL2_CFLAGS =
 else
 	# Must strip out -mwindows so we don't create a GUI app (will not work in Command Prompt)
-	SDL2_LIBS = $(shell sdl2-config --static-libs | sed 's/-mwindows//g')
-	SDL2_CFLAGS = $(shell sdl2-config --cflags)
+	SDL2_CONFIG ?= sdl2-config
+	SDL2_LIBS = $(shell $(SDL2_CONFIG) --static-libs | sed 's/-mwindows//g')
+	SDL2_CFLAGS = $(shell $(SDL2_CONFIG) --cflags)
 endif
 SDL2_LIBS += -lSDL2_net -liphlpapi
 

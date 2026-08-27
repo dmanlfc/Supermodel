@@ -72,11 +72,14 @@ ifneq ($(filter $(strip $(VULKAN)),0 1),$(strip $(VULKAN)))
 endif
 
 #
-# Toolchain
+# Toolchain. The defaults below are for a native macOS build; anything the
+# environment or the make command line supplies wins. See
+# Makefiles/Toolchain.inc and Docs/CROSS-COMPILING.md.
 #
-CC = clang
-CXX = clang
-LD = clang
+TOOLCHAIN_DEFAULT_CC = clang
+TOOLCHAIN_DEFAULT_CXX = clang
+TOOLCHAIN_DEFAULT_LD = $(CC)
+include Makefiles/Toolchain.inc
 
 #
 # SDL
