@@ -3,6 +3,14 @@
 
 ## Overview
 
+**This is a modified version of Supermodel to support my goals for the Batocera Linux project**
+
+**Key changes:**
+- OpenGL ES 3.x & Vulkan rendering support
+- User adjustable folders for Roms, Assets, Configuration etc.
+- Ligthgun support for Linux
+- Cross compilation fixes ans well as LF line endings.
+
 **Supermodel** emulates Sega's Model 3 arcade platform, allowing you to relive state-of-the-art 3D arcade gaming as it existed from 1996 through 1999. It uses OpenGL, [SDL2](https://libsdl.org), and can run on Windows, Linux, and macOS. It also supports network play on low-latency network connections. The source code is freely available under the terms of the [GNU General Public License](http://www.gnu.org/copyleft/gpl.html).
 
 <p align="center">
