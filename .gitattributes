@@ -1,0 +1,75 @@
+# Supermodel line-ending policy
+#
+# The repository stores every text file with LF, and checks it out with LF on
+# every platform, including Windows. Visual Studio, MSVC, MSYS2 and every
+# editor in common use handle LF fine, so there is no reason to keep two
+# conventions alive in one tree.
+#
+# This makes diffs, patches and cross-platform builds (Linux/AArch64, macOS,
+# Windows) byte-for-byte identical regardless of who committed the file or
+# what their core.autocrlf happens to be set to.
+
+# Default: let Git detect text vs binary, and normalise all text to LF.
+* text=auto eol=lf
+
+# ---------------------------------------------------------------- source ----
+*.c        text eol=lf
+*.cpp      text eol=lf
+*.h        text eol=lf
+*.hpp      text eol=lf
+*.m        text eol=lf
+*.mm       text eol=lf
+*.inc      text eol=lf
+*.rc       text eol=lf
+
+# --------------------------------------------------------------- shaders ----
+*.glsl     text eol=lf
+*.vert     text eol=lf
+*.frag     text eol=lf
+*.geom     text eol=lf
+*.comp     text eol=lf
+
+# ------------------------------------------------------- build & tooling ----
+Makefile   text eol=lf
+Makefile.* text eol=lf
+*.mk       text eol=lf
+*.sh       text eol=lf
+*.cmd      text eol=lf
+*.bat      text eol=lf
+*.py       text eol=lf
+*.yml      text eol=lf
+*.yaml     text eol=lf
+*.sln      text eol=lf
+*.vcproj   text eol=lf
+*.vcxproj  text eol=lf
+*.filters  text eol=lf
+*.xml      text eol=lf
+*.md       text eol=lf
+*.txt      text eol=lf
+*.svg      text eol=lf
+
+# ------------------------------------------------------------ binary ----
+# Never run EOL conversion or textual diffs over these.
+*.png      binary
+*.jpg      binary
+*.jpeg     binary
+*.gif      binary
+*.bmp      binary
+*.ico      binary
+*.icns     binary
+*.wav      binary
+*.zip      binary
+*.gz       binary
+*.tgz      binary
+*.bz2      binary
+*.xz       binary
+*.7z       binary
+*.pdf      binary
+*.dll      binary
+*.exe      binary
+*.lib      binary
+*.a        binary
+*.o        binary
+*.so       binary
+*.dylib    binary
+*.spv      binary
