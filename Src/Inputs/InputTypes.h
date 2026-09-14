@@ -83,7 +83,7 @@ private:
 	UINT16 m_minVal;
 	UINT16 m_offVal;
 	UINT16 m_maxVal;
-	
+
 public:
 	CAxisInput(const char *inputId, const char *inputLabel, unsigned inputGameFlags, const char *defaultMapping, std::shared_ptr<CAnalogInput> negInput, std::shared_ptr<CAnalogInput> posInput,
 		UINT16 minVal = 0x00, UINT16 offVal = 0x80, UINT16 maxVal = 0xFF);

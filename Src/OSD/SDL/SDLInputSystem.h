@@ -33,6 +33,10 @@
 #include "Inputs/InputSystem.h"
 #include "SDLIncludes.h"
 
+#ifdef SUPERMODEL_EVDEV
+#include "EvdevForceFeedback.h"
+#endif
+
 #include <vector>
 
 #define NUM_SDL_KEYS (sizeof(s_keyMap) / sizeof(SDLKeyMapStruct))
@@ -91,6 +95,14 @@ private:
 		int effectFrictionForceID = -1;
 	};
 	std::vector<hapticInfo> m_SDLHapticDatas;
+
+#ifdef SUPERMODEL_EVDEV
+	// Per-joystick native evdev FFB, used instead of SDL_Haptic when available; nullptr otherwise
+	std::vector<CEvdevForceFeedback*> m_evdevFF;
+
+	// Returns nullptr if unavailable (caller falls back to SDL_Haptic), else fills in joyDetails.hasFFeedback
+	CEvdevForceFeedback *OpenEvdevForceFeedback(SDL_Joystick *joystick, JoyDetails &joyDetails);
+#endif
 
 	/*
 	 * Opens all attached joysticks.

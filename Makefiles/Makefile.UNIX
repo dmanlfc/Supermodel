@@ -98,14 +98,17 @@ else ifneq ($(filter $(strip $(WAYLAND)),0 1),$(strip $(WAYLAND)))
 endif
 
 #
-# Optional Linux evdev light gun support. SDL only ever exposes one merged
-# system pointer, so two guns cannot be told apart through it; EVDEV=1 reads the
-# guns straight from /dev/input/eventN instead and is selected at run time with
-# InputSystem = evdev.
+# Optional Linux evdev support, used for two things that bypass SDL to work
+# around Linux-specific reliability problems: EVDEV=1 reads light guns
+# straight from /dev/input/eventN (InputSystem = evdev), since SDL only
+# exposes one merged pointer and can't tell two guns apart; and drives
+# steering wheel force feedback through the kernel's EV_FF ioctls instead of
+# SDL_Haptic, whose Linux backend misreports axis count/effect support -
+# this one applies under any input system (sdl, sdlgamepad or evdev).
 #
 # Left empty this is autodetected: enabled when libudev is present, quietly
 # skipped when it is not. EVDEV=1 turns a missing libudev into a build error
-# rather than a silent downgrade, EVDEV=0 leaves it out entirely.
+# rather than a silent downgrade, EVDEV=0 leaves both features out entirely.
 #
 EVDEV =
 ifneq ($(filter $(strip $(EVDEV)),0 1),$(strip $(EVDEV)))
@@ -201,13 +204,15 @@ PLATFORM_SRC_FILES = \
 	Src/OSD/Unix/FileSystemPath.cpp
 
 #
-# The evdev input system. Guarded by #ifdef SUPERMODEL_EVDEV as well, so it also
-# compiles to nothing if it ever ends up in a build without libudev. Listing it
+# The evdev light gun input system and the evdev force feedback backend.
+# Both are guarded by #ifdef SUPERMODEL_EVDEV as well, so they also compile
+# to nothing if they ever end up in a build without libudev. Listing them
 # here is what puts Src/OSD/evdev on the include path.
 #
 ifeq ($(strip $(SUPERMODEL_EVDEV_BUILD)),1)
 	PLATFORM_SRC_FILES += \
-		Src/OSD/evdev/EvdevInputSystem.cpp
+		Src/OSD/evdev/EvdevInputSystem.cpp \
+		Src/OSD/evdev/EvdevForceFeedback.cpp
 endif
 
 #

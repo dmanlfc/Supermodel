@@ -99,9 +99,9 @@ double CAnalogInput::ValueAsFraction() const
 /*
  * CAxisInput
  */
-CAxisInput::CAxisInput(const char *inputId, const char *inputLabel, unsigned inputGameFlags, const char *defaultMapping, 
+CAxisInput::CAxisInput(const char *inputId, const char *inputLabel, unsigned inputGameFlags, const char *defaultMapping,
 	std::shared_ptr<CAnalogInput> negInput, std::shared_ptr<CAnalogInput> posInput,	UINT16 minVal, UINT16 offVal, UINT16 maxVal) :
-	CInput(inputId, inputLabel, INPUT_FLAGS_AXIS, inputGameFlags, defaultMapping, offVal), m_negInput(negInput), m_posInput(posInput), 
+	CInput(inputId, inputLabel, INPUT_FLAGS_AXIS, inputGameFlags, defaultMapping, offVal), m_negInput(negInput), m_posInput(posInput),
 		m_minVal(minVal), m_offVal(offVal), m_maxVal(maxVal)
 {
 	//
@@ -122,7 +122,7 @@ void CAxisInput::Poll()
 			if (m_negInput != NULL) value -= (int)(m_negInput->ValueAsFraction() * (double)(m_offVal - m_minVal));
 		}
 		else
-		{ 
+		{
 			value = m_offVal;
 			if (m_posInput != NULL) value -= (int)(m_posInput->ValueAsFraction() * (double)(m_offVal - m_maxVal));
 			if (m_negInput != NULL) value += (int)(m_negInput->ValueAsFraction() * (double)(m_minVal - m_offVal));
@@ -130,7 +130,7 @@ void CAxisInput::Poll()
 	}
 	else if (m_source != NULL && m_source->GetValueAsAnalog(intValue, m_minVal, m_offVal, m_maxVal))
 		value = intValue;
-	else 
+	else
 		value = m_offVal;
 }
 

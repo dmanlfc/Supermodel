@@ -191,6 +191,33 @@ CSDLInputSystem::~CSDLInputSystem()
   CloseJoysticks();
 }
 
+#ifdef SUPERMODEL_EVDEV
+CEvdevForceFeedback *CSDLInputSystem::OpenEvdevForceFeedback(SDL_Joystick *joystick, JoyDetails &joyDetails)
+{
+#if SDL_VERSION_ATLEAST(2, 24, 0)
+  // SDL_JoystickPath() gives the /dev/input/eventN node SDL itself opened, so
+  // only the FFB path is redirected; axis/button numbering is untouched.
+  const char *devNode = SDL_JoystickPath(joystick);
+  if (devNode == nullptr)
+    return nullptr;
+
+  CEvdevForceFeedback *ff = new CEvdevForceFeedback();
+  if (!ff->Open(devNode))
+  {
+    delete ff;
+    return nullptr;
+  }
+
+  joyDetails.hasFFeedback = true;
+  return ff;
+#else
+  (void)joystick;
+  (void)joyDetails;
+  return nullptr;
+#endif
+}
+#endif // SUPERMODEL_EVDEV
+
 void CSDLInputSystem::OpenJoysticks()
 {
   // Open all available joysticks
@@ -247,12 +274,21 @@ void CSDLInputSystem::OpenJoysticks()
       joyDetails.numButtons = SDL_JoystickNumButtons(joystick);
     }
 
-    if (SDL_JoystickIsHaptic(joystick))
+    // Try native evdev FFB first (bypasses SDL_Haptic's Linux bugs, see
+    // HasBasicForce() below); falls through to SDL_Haptic if unavailable.
+    CEvdevForceFeedback *evdevFF = nullptr;
+#ifdef SUPERMODEL_EVDEV
+    evdevFF = OpenEvdevForceFeedback(joystick, joyDetails);
+#endif
+
+    if (evdevFF != nullptr)
+      numHapticAxes = 0; // FFB handled entirely through evdevFF instead
+    else if (SDL_JoystickIsHaptic(joystick))
         joyDetails.hasFFeedback = true;
     else
         joyDetails.hasFFeedback = false;
 
-    if (joyDetails.hasFFeedback)
+    if (evdevFF == nullptr && joyDetails.hasFFeedback)
     {
       hapticDatas.SDLhaptic = SDL_HapticOpenFromJoystick(joystick);
 
@@ -299,7 +335,9 @@ void CSDLInputSystem::OpenJoysticks()
     for (int axisNum = 0; axisNum < NUM_JOY_AXES; axisNum++)
     {
       joyDetails.hasAxis[axisNum] = joyDetails.numAxes > axisNum;
-      if (numHapticAxes > 0 && joyDetails.hasAxis[axisNum]) // unable to know which axes have ffb
+      if (evdevFF != nullptr) // native evdev FFB only ever drives the steering axis
+        joyDetails.axisHasFF[axisNum] = (axisNum == AXIS_X) && joyDetails.hasAxis[axisNum];
+      else if (numHapticAxes > 0 && joyDetails.hasAxis[axisNum]) // unable to know which axes have ffb
         joyDetails.axisHasFF[axisNum] = true;
       else
         joyDetails.axisHasFF[axisNum] = false;
@@ -308,7 +346,7 @@ void CSDLInputSystem::OpenJoysticks()
       strcpy(axisName, CInputSystem::GetDefaultAxisName(axisNum));
     }
 
-    if (joyDetails.hasFFeedback && hapticDatas.SDLhaptic != NULL && numHapticAxes > 0) // not a pad but wheel or joystick
+    if (evdevFF == nullptr && joyDetails.hasFFeedback && hapticDatas.SDLhaptic != NULL && numHapticAxes > 0) // not a pad but wheel or joystick
     {
       SDL_HapticSetAutocenter(hapticDatas.SDLhaptic, 0);
       SDL_HapticSetGain(hapticDatas.SDLhaptic, 100);
@@ -380,7 +418,7 @@ void CSDLInputSystem::OpenJoysticks()
       }
     }
 
-    if (joyDetails.hasFFeedback && hapticDatas.SDLhaptic != NULL && numHapticAxes == 0) // pad with rumble. Note : SDL_HapticRumbleSupported() is not enough to detect rumble pad only because joystick or wheel may have also rumble
+    if (evdevFF == nullptr && joyDetails.hasFFeedback && hapticDatas.SDLhaptic != NULL && numHapticAxes == 0) // pad with rumble. Note : SDL_HapticRumbleSupported() is not enough to detect rumble pad only because joystick or wheel may have also rumble
     {
       if (SDL_HapticRumbleInit(hapticDatas.SDLhaptic) < 0)
       {
@@ -402,6 +440,9 @@ void CSDLInputSystem::OpenJoysticks()
 
     m_joyDetails.push_back(joyDetails);
     m_SDLHapticDatas.push_back(hapticDatas);
+#ifdef SUPERMODEL_EVDEV
+    m_evdevFF.push_back(evdevFF);
+#endif
   }
 }
 
@@ -411,7 +452,7 @@ void CSDLInputSystem::CloseJoysticks()
   for (int i = 0; i < GetNumJoysticks(); i++)
   {
     JoyDetails joyDetails = m_joyDetails[i];
-    if (joyDetails.hasFFeedback)
+    if (joyDetails.hasFFeedback && m_SDLHapticDatas[i].SDLhaptic != NULL)
     {
       if (m_SDLHapticDatas[i].effectConstantForceID >= 0)
         SDL_HapticDestroyEffect(m_SDLHapticDatas[i].SDLhaptic, m_SDLHapticDatas[i].effectConstantForceID);
@@ -424,6 +465,12 @@ void CSDLInputSystem::CloseJoysticks()
 
       SDL_HapticClose(m_SDLHapticDatas[i].SDLhaptic);
     }
+#ifdef SUPERMODEL_EVDEV
+    if (i < (int)m_evdevFF.size() && m_evdevFF[i] != nullptr)
+    {
+      delete m_evdevFF[i];
+    }
+#endif
 
     if (m_useGameController)
     {
@@ -439,6 +486,9 @@ void CSDLInputSystem::CloseJoysticks()
 
   m_joyDetails.clear();
   m_SDLHapticDatas.clear();
+#ifdef SUPERMODEL_EVDEV
+  m_evdevFF.clear();
+#endif
 }
 
 bool CSDLInputSystem::InitializeSystem()
@@ -610,6 +660,57 @@ bool CSDLInputSystem::IsJoyButPressed(int joyNum, int butNum) const
 
 bool CSDLInputSystem::ProcessForceFeedbackCmd(int joyNum, int axisNum, ForceFeedbackCmd ffCmd)
 {
+#ifdef SUPERMODEL_EVDEV
+  // Reuses the SDL*Max config keys, so this is a transparent swap for SDL_Haptic below
+  if (joyNum >= 0 && joyNum < (int)m_evdevFF.size() && m_evdevFF[joyNum] != nullptr)
+  {
+    CEvdevForceFeedback *ff = m_evdevFF[joyNum];
+    switch (ffCmd.id)
+    {
+      case FFStop:
+        ff->StopAll();
+        break;
+
+      case FFConstantForce:
+      {
+        unsigned maxPercent = m_config["SDLConstForceMax"].ValueAs<unsigned>();
+        if (maxPercent == 0)
+          return false;
+        ff->ConstantForce(ffCmd.force * (float)(maxPercent / 100.0f));
+        break;
+      }
+
+      case FFSelfCenter:
+      {
+        unsigned maxPercent = m_config["SDLSelfCenterMax"].ValueAs<unsigned>();
+        if (maxPercent == 0)
+          return false;
+        ff->SelfCenter(ffCmd.force * (float)(maxPercent / 100.0f));
+        break;
+      }
+
+      case FFFriction:
+      {
+        unsigned maxPercent = m_config["SDLFrictionMax"].ValueAs<unsigned>();
+        if (maxPercent == 0)
+          return false;
+        ff->Friction(ffCmd.force * (float)(maxPercent / 100.0f));
+        break;
+      }
+
+      case FFVibrate:
+      {
+        unsigned maxPercent = m_config["SDLVibrateMax"].ValueAs<unsigned>();
+        if (maxPercent == 0)
+          return false;
+        ff->Vibrate(ffCmd.force * (float)(maxPercent / 100.0f));
+        break;
+      }
+    }
+    return true;
+  }
+#endif // SUPERMODEL_EVDEV
+
   switch (ffCmd.id)
   {
     case FFStop:
