@@ -154,7 +154,14 @@ bool CEvdevInputSystem::InitializeSystem()
 	}
 
 	if (m_guns.empty())
-		ErrorLog("evdev: no light guns found, falling back to the SDL system mouse.");
+	{
+		// Stand in for gun 1 so the numbered MOUSE1_* mappings still resolve
+		// instead of becoming empty sources.
+		ErrorLog("evdev: no light guns found, falling back to the SDL system mouse as mouse 1.");
+		MouseDetails mseDetails{};
+		snprintf(mseDetails.name, sizeof(mseDetails.name), "System Mouse");
+		m_mseDetails.push_back(mseDetails);
+	}
 
 	return CSDLInputSystem::InitializeSystem();
 }
@@ -172,9 +179,16 @@ bool CEvdevInputSystem::OpenGun(const std::string &devNode)
 	// mis-tagged as a gun, a keyboard node belonging to the same device) is of no
 	// use here and would otherwise sit in the gun list doing nothing.
 	struct input_absinfo absX, absY;
-	if (ioctl(fd, EVIOCGABS(ABS_X), &absX) < 0 || ioctl(fd, EVIOCGABS(ABS_Y), &absY) < 0 ||
-	    absX.maximum <= absX.minimum || absY.maximum <= absY.minimum)
+	if (ioctl(fd, EVIOCGABS(ABS_X), &absX) < 0 || ioctl(fd, EVIOCGABS(ABS_Y), &absY) < 0)
 	{
+		ErrorLog("evdev: ignoring %s, it does not report an absolute X/Y position (%s).", devNode.c_str(), strerror(errno));
+		close(fd);
+		return false;
+	}
+	if (absX.maximum <= absX.minimum || absY.maximum <= absY.minimum)
+	{
+		ErrorLog("evdev: ignoring %s, its absolute X/Y range is empty (X %d..%d, Y %d..%d).", devNode.c_str(),
+			absX.minimum, absX.maximum, absY.minimum, absY.maximum);
 		close(fd);
 		return false;
 	}
@@ -224,9 +238,7 @@ const CEvdevInputSystem::Gun *CEvdevInputSystem::GetGun(int mseNum) const
 
 int CEvdevInputSystem::GetNumMice() const
 {
-	if (m_guns.empty())
-		return CSDLInputSystem::GetNumMice();
-	return (int)m_guns.size();
+	return (int)m_mseDetails.size();
 }
 
 const MouseDetails *CEvdevInputSystem::GetMouseDetails(int mseNum)
