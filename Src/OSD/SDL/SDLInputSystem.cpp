@@ -202,7 +202,7 @@ CEvdevForceFeedback *CSDLInputSystem::OpenEvdevForceFeedback(SDL_Joystick *joyst
     return nullptr;
 
   CEvdevForceFeedback *ff = new CEvdevForceFeedback();
-  if (!ff->Open(devNode))
+  if (!ff->Open(devNode) || !ff->HasConstantForce())
   {
     delete ff;
     return nullptr;
